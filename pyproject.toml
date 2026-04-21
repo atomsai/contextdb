@@ -1,0 +1,106 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "contextdb"
+version = "0.1.0"
+description = "The unified context layer for AI agents — replacing the patchwork with a memory operating system"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "Gaurav Sharma", email = "gaurav@saaslabs.co" },
+]
+keywords = [
+    "ai-agents",
+    "memory",
+    "context",
+    "llm",
+    "rag",
+    "knowledge-graph",
+    "vector-database",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "numpy>=1.24",
+    "aiosqlite>=0.19",
+    "openai>=1.0",
+]
+
+[project.optional-dependencies]
+postgres = ["asyncpg>=0.29", "pgvector>=0.2"]
+faiss = ["faiss-cpu>=1.7"]
+local = ["sentence-transformers>=2.0"]
+neo4j = ["neo4j>=5.0"]
+redis = ["redis>=5.0"]
+rl = ["torch>=2.0", "trl>=0.7"]
+all = [
+    "asyncpg>=0.29",
+    "pgvector>=0.2",
+    "faiss-cpu>=1.7",
+    "sentence-transformers>=2.0",
+    "neo4j>=5.0",
+    "redis>=5.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "hypothesis>=6.0",
+    "pre-commit>=3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/contextdb/contextdb"
+Documentation = "https://contextdb.dev"
+Repository = "https://github.com/contextdb/contextdb"
+Issues = "https://github.com/contextdb/contextdb/issues"
+
+[project.scripts]
+contextdb = "contextdb.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "SIM", "TCH"]
+# ANN401: `Any` is legitimate for generic kwargs forwarding.
+# TC00x: the stricter variants push runtime-needed imports into TYPE_CHECKING
+# blocks, which breaks Pydantic models and `isinstance` checks. We import
+# only what we need at runtime; keep the broader policy off.
+# SIM102: nested ifs read better than AND-merged conditions when the clauses
+# are independently meaningful.
+ignore = ["ANN401", "TC001", "TC002", "TC003", "SIM102"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["faiss", "sentence_transformers"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.hatch.build.targets.wheel]
+packages = ["contextdb"]
