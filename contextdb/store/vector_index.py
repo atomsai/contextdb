@@ -16,7 +16,7 @@ from __future__ import annotations
 import pickle
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,7 +26,7 @@ def _normalize(vectors: NDArray[np.float32]) -> NDArray[np.float32]:
     """L2-normalize rows. Zero vectors pass through unchanged."""
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1.0, norms)
-    return (vectors / norms).astype(np.float32)
+    return cast("NDArray[np.float32]", (vectors / norms).astype(np.float32))
 
 
 class VectorIndex(ABC):
@@ -62,10 +62,12 @@ class NumpyIndex(VectorIndex):
     def add(self, ids: list[str], embeddings: NDArray[np.float32]) -> None:
         if not ids:
             return
-        arr = np.asarray(embeddings, dtype=np.float32).reshape(len(ids), self.dimension)
-        arr = _normalize(arr)
+        reshaped = np.asarray(embeddings, dtype=np.float32).reshape(len(ids), self.dimension)
+        normalized = _normalize(reshaped)
         self._ids.extend(ids)
-        self._vectors = np.vstack([self._vectors, arr]) if len(self._vectors) else arr
+        self._vectors = (
+            np.vstack([self._vectors, normalized]) if len(self._vectors) else normalized
+        )
 
     def search(self, query: NDArray[np.float32], top_k: int = 10) -> list[tuple[str, float]]:
         if len(self._ids) == 0:
@@ -122,9 +124,9 @@ class FAISSIndex(VectorIndex):
     def add(self, ids: list[str], embeddings: NDArray[np.float32]) -> None:
         if not ids:
             return
-        arr = np.asarray(embeddings, dtype=np.float32).reshape(len(ids), self.dimension)
-        arr = _normalize(arr)
-        self._index.add(arr)
+        reshaped = np.asarray(embeddings, dtype=np.float32).reshape(len(ids), self.dimension)
+        normalized = _normalize(reshaped)
+        self._index.add(normalized)
         self._ids.extend(ids)
 
     def search(self, query: NDArray[np.float32], top_k: int = 10) -> list[tuple[str, float]]:
