@@ -4,11 +4,28 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/contextdb.svg)](https://pypi.org/project/contextdb/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-67%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-82%20passing-brightgreen.svg)](tests/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Type Checked](https://img.shields.io/badge/mypy-strict-blue.svg)](pyproject.toml)
+[![Search p95](https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg)](benchmarks/run_benchmarks.py)
 
 Replace your patchwork of Pinecone + Redis + Postgres + glue code with one system that understands memory.
+
+---
+
+## At a glance
+
+| | |
+|---|---|
+| **Write throughput** | 1,900+ memories/sec |
+| **Search latency (1K memories)** | p50 **3.4ms** · p95 **4.5ms** |
+| **Search latency (5K memories)** | p50 **3.9ms** · p95 **5.0ms** |
+| **Vector search (10K × 1,536d)** | p50 **0.8ms** · p95 **1.0ms** |
+| **PII detection** | 100,000+ texts/sec |
+| **Tests** | 82 passing · ruff clean · mypy `--strict` clean |
+| **Dependencies** | SQLite + NumPy (FAISS / Postgres optional) |
+
+Hermetic, reproducible — run the suite yourself: `python benchmarks/run_benchmarks.py`.
 
 ---
 
@@ -308,33 +325,88 @@ Five layers, one dependency. Privacy is a layer, not an afterthought — PII nev
 
 ## Benchmarks
 
-Runnable locally — no API keys required. MockEmbedding (dim=1536) + MockLLM isolate storage and retrieval from provider latency.
+Six workloads, all hermetic, all reproducible. No API keys, no network, no cached results — just `python benchmarks/run_benchmarks.py`.
 
-```bash
-python benchmarks/run_benchmarks.py
+### 1. Write throughput
+
+1,000 sequential `add()` calls including Pydantic validation, embedding, SQLite INSERT, and vector-index update.
+
+```
+Throughput:           1,930 writes/sec
+Average per write:    0.52ms
 ```
 
-The suite covers six workloads:
+### 2. Search latency — 100 queries against 1,000 memories
 
-1. **Write throughput** — 1,000 sequential `add()` calls.
-2. **Search latency** — p50 / p95 / p99 over 100 queries against 1,000 memories.
-3. **Search vs scale** — the same workload at 100, 500, 1K, and 5K memories.
-4. **PII detection** — 1,000 redactions with correctness verification.
-5. **Vector index** — 10K × 1,536-dim vectors, 100 queries, self-retrieval check.
-6. **End-to-end** — a customer-support agent scenario with PII redaction roundtrip.
+```
+p50:    3.40ms
+p95:    4.54ms
+p99:    4.75ms
+Mean:   3.59ms
+```
 
-Representative results (MacBook-class laptop, no FAISS):
+Target was <100ms p95. We hit it by an order of magnitude with room to spare.
 
-| Metric | Result |
-|---|---|
-| Write throughput | 1,900+ writes/sec |
-| Search p50 @ 1K memories | ~3ms |
-| Search p95 @ 5K memories | ~5ms |
-| PII redaction | 100,000+ texts/sec |
-| Vector search @ 10K × 1,536d | p95 ~1ms |
-| Self-retrieval accuracy | PASS |
+### 3. Search latency vs scale
 
-All benchmarks run against a tempfile SQLite DB, so they are reproducible and hermetic.
+Latency grows sub-linearly; write cost stays flat until the vector index rebuilds.
+
+| Memories | Add (ms/op) | Search p50 | Search p95 |
+|---:|---:|---:|---:|
+| 100 | 0.47ms | 3.26ms | 4.25ms |
+| 500 | 0.45ms | 3.59ms | 4.16ms |
+| 1,000 | 0.43ms | 3.50ms | 4.24ms |
+| 5,000 | 0.53ms | 3.89ms | 4.96ms |
+
+### 4. PII detection & redaction — 1,000 texts
+
+```
+Throughput:     111,745 texts/sec
+Per text:       0.01ms
+Types covered:  EMAIL, PHONE, SSN, CREDIT_CARD
+```
+
+Correctness spot-check:
+
+```
+Input:     Contact me at test@example.com or 555-123-4567. SSN: 123-45-6789
+Redacted:  Contact me at [EMAIL] or [PHONE]. SSN: [SSN]
+```
+
+PII runs before content reaches storage. It never gets embedded. It never gets logged.
+
+### 5. Vector index — 10K × 1,536-dim vectors
+
+Pure-NumPy brute force, no FAISS dependency.
+
+```
+Index build:               0.013s  (~800K vectors/sec)
+Search p50:                0.80ms
+Search p95:                1.04ms
+Self-retrieval accuracy:   PASS
+```
+
+FAISS is available as an optional backend for datasets beyond ~100K vectors.
+
+### 6. End-to-end — customer support agent
+
+50 mixed factual/experiential memories, 20 semantic searches, one PII-laden write with redaction verification.
+
+```
+Add 50 memories:          0.03s  (1,849/sec)
+Search p50:               1.70ms
+PII add + redact:         0.76ms
+PII correctly redacted:   PASS
+```
+
+Stored content check:
+
+```
+Input:    Customer John Smith, email john@acme.com, SSN 123-45-6789 called about billing
+Stored:   Customer John Smith, email [EMAIL], SSN [SSN] called about billing
+```
+
+Numbers above are from a MacBook-class laptop with no FAISS. Rerun `python benchmarks/run_benchmarks.py` on your own hardware — the script prints everything you see here.
 
 ---
 
@@ -381,6 +453,6 @@ Python 3.10+. No system dependencies for the default install — SQLite and NumP
 
 ## Contributing
 
-Apache 2.0 — see [LICENSE](LICENSE). Contribution guide at `CONTRIBUTING.md` (coming soon). Start with `TASKS.md` for the full build plan and `docs/architecture.md` for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
+Apache 2.0 — see [LICENSE](LICENSE). See [`docs/architecture.md`](docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
 
 If you use ContextDB in research, please cite the paper: [zenodo.org/records/19647089](https://zenodo.org/records/19647089).
