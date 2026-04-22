@@ -89,7 +89,7 @@ class SentenceTransformerEmbedding(EmbeddingProvider):
         except ImportError as exc:  # pragma: no cover - optional dep
             raise RuntimeError(
                 "sentence-transformers is not installed. "
-                "Install with `pip install contextdb[local]`."
+                "Install with `pip install pycontextdb[local]`."
             ) from exc
         self._model = SentenceTransformer(model_name)
         self._dim = int(self._model.get_sentence_embedding_dimension())

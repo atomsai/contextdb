@@ -4,7 +4,7 @@ This project uses ContextDB as the memory layer for AI agents. ContextDB replace
 
 ## Installation
 ```bash
-pip install contextdb
+pip install pycontextdb
 ```
 
 ## Usage Pattern

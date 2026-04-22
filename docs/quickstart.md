@@ -3,7 +3,7 @@
 ContextDB is a Python library. Install it with pip:
 
 ```bash
-pip install contextdb
+pip install pycontextdb
 ```
 
 ## Minimal example

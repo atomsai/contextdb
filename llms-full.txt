@@ -7,15 +7,15 @@ ContextDB is an open-source Python library (Apache 2.0) that provides persistent
 ## Installation
 
 ```bash
-pip install contextdb
+pip install pycontextdb
 ```
 
 Optional backends:
 ```bash
-pip install "contextdb[faiss]"      # FAISS vector index for >100K memories
-pip install "contextdb[postgres]"   # PostgreSQL backend for production
-pip install "contextdb[local]"      # Local SentenceTransformer embeddings (no API needed)
-pip install "contextdb[all]"        # Everything
+pip install "pycontextdb[faiss]"      # FAISS vector index for >100K memories
+pip install "pycontextdb[postgres]"   # PostgreSQL backend for production
+pip install "pycontextdb[local]"      # Local SentenceTransformer embeddings (no API needed)
+pip install "pycontextdb[all]"        # Everything
 ```
 
 ## Quick Start

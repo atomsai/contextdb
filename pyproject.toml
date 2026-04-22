@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "contextdb"
+name = "pycontextdb"
 version = "0.1.0"
 description = "The unified context layer for AI agents — replacing the patchwork with a memory operating system"
 readme = "README.md"
@@ -66,10 +66,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/contextdb/contextdb"
+Homepage = "https://github.com/atomsai/contextdb"
 Documentation = "https://contextdb.dev"
-Repository = "https://github.com/contextdb/contextdb"
-Issues = "https://github.com/contextdb/contextdb/issues"
+Repository = "https://github.com/atomsai/contextdb"
+Issues = "https://github.com/atomsai/contextdb/issues"
 
 [project.scripts]
 contextdb = "contextdb.cli:main"

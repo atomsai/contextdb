@@ -6,7 +6,7 @@
 <p align="center"><strong>The unified context layer for AI agents.</strong></p>
 
 <p align="center">
-  <a href="https://pypi.org/project/contextdb/"><img src="https://img.shields.io/pypi/v/contextdb.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/pycontextdb/"><img src="https://img.shields.io/pypi/v/pycontextdb.svg" alt="PyPI version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="tests/"><img src="https://img.shields.io/badge/tests-82%20passing-brightgreen.svg" alt="Tests"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
@@ -497,10 +497,10 @@ Paper: [*ContextDB: A Unified Context Layer for AI Agents*](https://zenodo.org/r
 ## Installation
 
 ```bash
-pip install contextdb                 # core: SQLite, NumPy vector index, all memory types
-pip install "contextdb[faiss]"        # FAISS-accelerated vector index
-pip install "contextdb[postgres]"     # asyncpg + pgvector backend
-pip install "contextdb[all]"          # everything
+pip install pycontextdb                 # core: SQLite, NumPy vector index, all memory types
+pip install "pycontextdb[faiss]"        # FAISS-accelerated vector index
+pip install "pycontextdb[postgres]"     # asyncpg + pgvector backend
+pip install "pycontextdb[all]"          # everything
 ```
 
 Python 3.10+. No system dependencies for the default install — SQLite and NumPy ship with Python.

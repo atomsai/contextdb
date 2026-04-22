@@ -16,7 +16,7 @@ Search p95 under 5ms at 5K memories on commodity hardware.
 ## Install
 
 ```bash
-pip install contextdb
+pip install pycontextdb
 ```
 
 ## Quick start

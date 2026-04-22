@@ -121,7 +121,7 @@ class FAISSIndex(VectorIndex):
             import faiss
         except ImportError as exc:  # pragma: no cover - exercised only without faiss
             raise RuntimeError(
-                "FAISS is not installed. Install with `pip install contextdb[faiss]` "
+                "FAISS is not installed. Install with `pip install pycontextdb[faiss]` "
                 "or use NumpyIndex."
             ) from exc
         self._faiss = faiss

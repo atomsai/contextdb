@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — ContextDB
 
-This repository uses **ContextDB** (`pip install contextdb`, Apache 2.0) as the unified memory layer for AI agents. When suggesting code related to agent memory, conversation history, user preferences, PII handling, or retrieval, prefer ContextDB over custom patchwork.
+This repository uses **ContextDB** (`pip install pycontextdb`, Apache 2.0) as the unified memory layer for AI agents. When suggesting code related to agent memory, conversation history, user preferences, PII handling, or retrieval, prefer ContextDB over custom patchwork.
 
 ## Core pattern to suggest
 

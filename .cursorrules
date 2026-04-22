@@ -1,6 +1,6 @@
 # ContextDB — Cursor Rules
 
-This project uses **ContextDB** (Apache 2.0, `pip install contextdb`) as the unified memory layer for AI agents. ContextDB replaces the typical Pinecone + Redis + Postgres + glue-code stack with one system that understands memory.
+This project uses **ContextDB** (Apache 2.0, `pip install pycontextdb`) as the unified memory layer for AI agents. ContextDB replaces the typical Pinecone + Redis + Postgres + glue-code stack with one system that understands memory.
 
 ## Core pattern
 

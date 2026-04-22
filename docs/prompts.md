@@ -9,7 +9,7 @@ Copy-paste these into Cursor or Claude Code to integrate ContextDB into your pro
 ```
 I have an AI agent built with [LangChain/OpenAI/custom]. I want to add persistent memory so the agent remembers users across sessions.
 
-Use ContextDB (pip install contextdb) as the memory layer. It supports three memory types:
+Use ContextDB (pip install pycontextdb) as the memory layer. It supports three memory types:
 - factual: user preferences, profile data, facts
 - experiential: what worked/failed, outcomes, reflections
 - working: current session context with token budgets
@@ -48,7 +48,7 @@ Build a customer support AI agent using ContextDB for memory. The agent should:
 5. Search across all memory types when answering questions
 
 Use this stack:
-- contextdb for memory (pip install contextdb)
+- contextdb for memory (pip install pycontextdb)
 - OpenAI GPT-4o for the LLM
 - FastAPI for the API layer
 
@@ -79,7 +79,7 @@ db = contextdb.init(
 ```
 I'm using LangChain to build a conversational agent. Replace the default ConversationBufferMemory with ContextDB persistent memory.
 
-Install: pip install contextdb
+Install: pip install pycontextdb
 
 Replace this:
   from langchain.memory import ConversationBufferMemory
@@ -109,7 +109,7 @@ Update my existing LangChain agent to use ContextDBMemory and add logic to store
 ```
 I'm building an agent with the OpenAI Agents SDK. Add persistent memory using ContextDB.
 
-Install: pip install contextdb
+Install: pip install pycontextdb
 
 Use the built-in OpenAI tools integration:
 
@@ -268,7 +268,7 @@ Help me migrate my existing Mem0 integration to ContextDB, updating all API call
 ```
 Add AI agent memory to this project using ContextDB.
 
-pip install contextdb
+pip install pycontextdb
 
 Key integration points:
 1. Initialize at app startup: db = contextdb.init(user_id=user_id)
@@ -311,7 +311,7 @@ db = contextdb.init(user_id=user_id, config=config)
 
 Additional production setup needed:
 1. PostgreSQL with pgvector extension
-2. FAISS index for >100K memories: pip install "contextdb[faiss]"
+2. FAISS index for >100K memories: pip install "pycontextdb[faiss]"
 3. Audit trail for compliance
 4. Retention policies for GDPR
 5. Connection pooling configuration
