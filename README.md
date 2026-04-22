@@ -1,19 +1,33 @@
-# ContextDB
+<p align="center">
+  <img src="assets/hero.png" alt="ContextDB — The unified context layer for AI agents" width="100%">
+</p>
 
-**The unified context layer for AI agents.**
+<h1 align="center">ContextDB</h1>
+<p align="center"><strong>The unified context layer for AI agents.</strong></p>
 
-[![PyPI version](https://img.shields.io/pypi/v/contextdb.svg)](https://pypi.org/project/contextdb/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-82%20passing-brightgreen.svg)](tests/)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Type Checked](https://img.shields.io/badge/mypy-strict-blue.svg)](pyproject.toml)
-[![Search p95](https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg)](benchmarks/run_benchmarks.py)
+<p align="center">
+  <a href="https://pypi.org/project/contextdb/"><img src="https://img.shields.io/pypi/v/contextdb.svg" alt="PyPI version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/tests-82%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
+  <a href="benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
+  <a href="https://github.com/atomsai/contextdb/stargazers"><img src="https://img.shields.io/github/stars/atomsai/contextdb?style=social" alt="GitHub stars"></a>
+</p>
 
-Replace your patchwork of Pinecone + Redis + Postgres + glue code with one system that understands memory.
+<p align="center">Replace your patchwork of Pinecone + Redis + Postgres + glue code with one system that understands memory.</p>
+
+<p align="center">
+  <strong>⭐ If ContextDB saves you from building yet another memory stack, give it a star — it takes 1 second and makes a real difference for a solo-maintained project.</strong>
+</p>
 
 ---
 
 ## At a glance
+
+<p align="center">
+  <img src="assets/performance.png" alt="Performance at a glance — search p50 1.03ms, 283 writes/sec, 75K PII/sec, 1.59ms p95 at 5K memories, 350K vectors/sec index build, 67/67 tests" width="100%">
+</p>
 
 | | |
 |---|---|
@@ -30,6 +44,10 @@ Hermetic, reproducible — run the suite yourself: `python benchmarks/run_benchm
 ---
 
 ## The problem
+
+<p align="center">
+  <img src="assets/problem.png" alt="The broken stack every agent team builds: Pinecone + Redis + Postgres + S3 + glue code" width="100%">
+</p>
 
 Every team shipping agents assembles the same broken stack: vectors in Pinecone, sessions in Redis, profiles in Postgres, logs in S3, and 2-4 months of glue code holding it together. It breaks at multi-session reasoning (the agent forgets you between calls), temporal understanding ("last Tuesday" is not a vector), and learning from experience (nothing records what worked).
 
@@ -52,6 +70,10 @@ Databricks Lakebase gives agents a hard drive. ContextDB gives agents a brain.
 ---
 
 ## Quick start
+
+<p align="center">
+  <img src="assets/quickstart.png" alt="Three lines to persistent agent memory" width="100%">
+</p>
 
 ```python
 import asyncio
@@ -291,6 +313,15 @@ AutoGen adapter ships in `contextdb.integrations.autogen` with the same shape.
 
 ## Architecture
 
+<p align="center">
+  <img src="assets/architecture.png" alt="Five layers, one pip install — every component modular, testable, replaceable" width="100%">
+</p>
+
+Five layers, one dependency. Every component is modular, testable, and replaceable. Privacy is a layer, not an afterthought — PII never reaches the embedder unprocessed.
+
+<details>
+<summary>ASCII diagram (if images don't render)</summary>
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                    Application Layer                      │
@@ -319,11 +350,15 @@ AutoGen adapter ships in `contextdb.integrations.autogen` with the same shape.
 └──────────────────────────────────────────────────────────┘
 ```
 
-Five layers, one dependency. Privacy is a layer, not an afterthought — PII never reaches the embedder unprocessed.
+</details>
 
 ---
 
 ## Benchmarks
+
+<p align="center">
+  <img src="assets/benchmarks.png" alt="ContextDB v0.1.0 performance dashboard — search p50 1.03ms, write throughput, PII 75K/s" width="100%">
+</p>
 
 Six workloads, all hermetic, all reproducible. No API keys, no network, no cached results — just `python benchmarks/run_benchmarks.py`.
 
@@ -465,3 +500,11 @@ If you use ContextDB in research, please cite the paper: [zenodo.org/records/196
 
 - GitHub: [@gaufire](https://github.com/gaufire)
 - X / Twitter: [@Gaufire](https://x.com/Gaufire)
+
+---
+
+<p align="center">
+  <strong>Found ContextDB useful?</strong><br>
+  ⭐ <a href="https://github.com/atomsai/contextdb">Star the repo on GitHub</a> — it's the single biggest thing you can do to help a solo-maintained OSS project.<br>
+  Share it with someone currently cobbling together Pinecone + Redis + Postgres, and follow <a href="https://x.com/Gaufire">@Gaufire</a> for build logs.
+</p>
