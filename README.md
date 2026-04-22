@@ -434,7 +434,7 @@ Built on analysis of 200+ papers on agentic memory. The taxonomy — **Forms × 
 
 ContextDB is the first system to span all three axes in one library.
 
-Paper: [*ContextDB: A Unified Context Layer for AI Agents*](https://zenodo.org/records/19647089) (Zenodo, 2026).
+Paper: [*ContextDB: A Unified Context Layer for AI Agents*](https://zenodo.org/records/19647089) by **Gaurav Sharma** ([@gaufire](https://github.com/gaufire) · [x.com/Gaufire](https://x.com/Gaufire)), Zenodo, 2026.
 
 ---
 
@@ -456,3 +456,12 @@ Python 3.10+. No system dependencies for the default install — SQLite and NumP
 Apache 2.0 — see [LICENSE](LICENSE). See [`docs/architecture.md`](docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
 
 If you use ContextDB in research, please cite the paper: [zenodo.org/records/19647089](https://zenodo.org/records/19647089).
+
+---
+
+## Author
+
+**Gaurav Sharma** — creator and maintainer of ContextDB, author of the companion paper.
+
+- GitHub: [@gaufire](https://github.com/gaufire)
+- X / Twitter: [@Gaufire](https://x.com/Gaufire)
