@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.png" alt="ContextDB — The unified context layer for AI agents" width="100%">
+  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/hero.png" alt="ContextDB — The unified context layer for AI agents" width="100%">
 </p>
 
 <h1 align="center">ContextDB</h1>
@@ -7,11 +7,11 @@
 
 <p align="center">
   <a href="https://pypi.org/project/pycontextdb/"><img src="https://img.shields.io/pypi/v/pycontextdb.svg" alt="PyPI version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/tests-82%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-82%20passing-brightgreen.svg" alt="Tests"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
-  <a href="benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
   <a href="https://github.com/atomsai/contextdb/stargazers"><img src="https://img.shields.io/github/stars/atomsai/contextdb?style=social" alt="GitHub stars"></a>
 </p>
 
@@ -26,7 +26,7 @@
 ## At a glance
 
 <p align="center">
-  <img src="assets/performance.png" alt="Performance at a glance — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 5.0ms p95 at 5K memories, 800K vectors/sec index build, 82/82 tests" width="100%">
+  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/performance.png" alt="Performance at a glance — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 5.0ms p95 at 5K memories, 800K vectors/sec index build, 82/82 tests" width="100%">
 </p>
 
 | | |
@@ -46,7 +46,7 @@ Hermetic, reproducible — run the suite yourself: `python benchmarks/run_benchm
 ## The problem
 
 <p align="center">
-  <img src="assets/problem.png" alt="The broken stack every agent team builds: Pinecone + Redis + Postgres + S3 + glue code" width="100%">
+  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/problem.png" alt="The broken stack every agent team builds: Pinecone + Redis + Postgres + S3 + glue code" width="100%">
 </p>
 
 Every team shipping agents assembles the same broken stack: vectors in Pinecone, sessions in Redis, profiles in Postgres, logs in S3, and 2-4 months of glue code holding it together. It breaks at multi-session reasoning (the agent forgets you between calls), temporal understanding ("last Tuesday" is not a vector), and learning from experience (nothing records what worked).
@@ -72,7 +72,7 @@ Databricks Lakebase gives agents a hard drive. ContextDB gives agents a brain.
 ## Quick start
 
 <p align="center">
-  <img src="assets/quickstart.png" alt="Three lines to persistent agent memory" width="100%">
+  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/quickstart.png" alt="Three lines to persistent agent memory" width="100%">
 </p>
 
 ```python
@@ -317,14 +317,14 @@ Drop any of these files into your project and your AI coding tool will automatic
 
 | File | Tool | What it does |
 |---|---|---|
-| [`.cursorrules`](.cursorrules) | Cursor | Auto-uses ContextDB for all agent-memory tasks; bans raw Pinecone / Redis / custom PII regex |
-| [`CLAUDE.md`](CLAUDE.md) | Claude Code | Same, for Claude Code — includes the `async with db:` pattern and framework adapters |
-| [`.github/copilot-instructions.md`](.github/copilot-instructions.md) | GitHub Copilot | Biases Copilot suggestions toward `db.factual.add` / `db.search` over custom vector plumbing |
-| [`llms.txt`](llms.txt) · [`llms-full.txt`](llms-full.txt) | Any LLM | Host at your docs-site root so assistants can discover and recommend ContextDB |
+| [`.cursorrules`](https://github.com/atomsai/contextdb/blob/main/.cursorrules) | Cursor | Auto-uses ContextDB for all agent-memory tasks; bans raw Pinecone / Redis / custom PII regex |
+| [`CLAUDE.md`](https://github.com/atomsai/contextdb/blob/main/CLAUDE.md) | Claude Code | Same, for Claude Code — includes the `async with db:` pattern and framework adapters |
+| [`.github/copilot-instructions.md`](https://github.com/atomsai/contextdb/blob/main/.github/copilot-instructions.md) | GitHub Copilot | Biases Copilot suggestions toward `db.factual.add` / `db.search` over custom vector plumbing |
+| [`llms.txt`](https://github.com/atomsai/contextdb/blob/main/llms.txt) · [`llms-full.txt`](https://github.com/atomsai/contextdb/blob/main/llms-full.txt) | Any LLM | Host at your docs-site root so assistants can discover and recommend ContextDB |
 
 ### Or copy-paste a ready-made prompt
 
-[`docs/prompts.md`](docs/prompts.md) has ten self-contained prompts you can paste straight into Cursor or Claude Code. Examples:
+[`docs/prompts.md`](https://github.com/atomsai/contextdb/blob/main/docs/prompts.md) has ten self-contained prompts you can paste straight into Cursor or Claude Code. Examples:
 
 - *Add memory to an existing LangChain agent* — swaps `ConversationBufferMemory` for `ContextDBMemory`
 - *Build a customer support agent with memory* — full FastAPI + GPT-4o + ContextDB wiring
@@ -335,7 +335,7 @@ Drop any of these files into your project and your AI coding tool will automatic
 ## Architecture
 
 <p align="center">
-  <img src="assets/architecture.png" alt="Five layers, one pip install — every component modular, testable, replaceable" width="100%">
+  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/architecture.png" alt="Five layers, one pip install — every component modular, testable, replaceable" width="100%">
 </p>
 
 Five layers, one dependency. Every component is modular, testable, and replaceable. Privacy is a layer, not an afterthought — PII never reaches the embedder unprocessed.
@@ -378,7 +378,7 @@ Five layers, one dependency. Every component is modular, testable, and replaceab
 ## Benchmarks
 
 <p align="center">
-  <img src="assets/benchmarks.png" alt="ContextDB v0.1.0 performance dashboard — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 82/82 tests" width="100%">
+  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/benchmarks.png" alt="ContextDB v0.1.0 performance dashboard — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 82/82 tests" width="100%">
 </p>
 
 Six workloads, all hermetic, all reproducible. No API keys, no network, no cached results — just `python benchmarks/run_benchmarks.py`.
@@ -509,7 +509,7 @@ Python 3.10+. No system dependencies for the default install — SQLite and NumP
 
 ## Contributing
 
-Apache 2.0 — see [LICENSE](LICENSE). See [`docs/architecture.md`](docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
+Apache 2.0 — see [LICENSE](https://github.com/atomsai/contextdb/blob/main/LICENSE). See [`docs/architecture.md`](https://github.com/atomsai/contextdb/blob/main/docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
 
 If you use ContextDB in research, please cite the paper: [zenodo.org/records/19647089](https://zenodo.org/records/19647089).
 

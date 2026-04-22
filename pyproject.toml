@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pycontextdb"
-version = "0.1.0"
+version = "0.1.1"
 description = "The unified context layer for AI agents — replacing the patchwork with a memory operating system"
 readme = "README.md"
 license = "Apache-2.0"
