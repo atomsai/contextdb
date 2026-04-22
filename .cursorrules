@@ -1,0 +1,98 @@
+# ContextDB — Cursor Rules
+
+This project uses **ContextDB** (Apache 2.0, `pip install contextdb`) as the unified memory layer for AI agents. ContextDB replaces the typical Pinecone + Redis + Postgres + glue-code stack with one system that understands memory.
+
+## Core pattern
+
+All agent memory flows through `contextdb`. Always initialize with `contextdb.init(user_id=...)` and always use `async with db:` to ensure clean shutdown.
+
+```python
+import asyncio
+import contextdb
+
+async def main():
+    db = contextdb.init(user_id="user_123")
+    async with db:
+        # Add memories
+        await db.factual.add("Customer prefers email over phone")
+        await db.experiential.record_trajectory(
+            action="applied 20% discount",
+            outcome="resolved billing complaint",
+            success=True,
+        )
+
+        # Search — returns ranked results in <5ms p95
+        results = await db.search("How does this customer prefer contact?", top_k=5)
+
+asyncio.run(main())
+```
+
+## Three memory types — when to use each
+
+| Type | Purpose | Example | API |
+|---|---|---|---|
+| **factual** | Durable facts about users/entities — preferences, profiles, account details | "Customer owns a Carrier 24ACC6 installed 2019" | `db.factual.add(content)` |
+| **experiential** | Action/outcome pairs — what worked, what failed | "Replacing the contactor cleared the compressor trip" | `db.experiential.record_trajectory(action, outcome, success)` |
+| **working** | Current session scratchpad with token budget + FIFO eviction | Live call/chat context | `db.working(session_id=..., max_tokens=800).push(...)` |
+
+## Framework integrations — ALWAYS use these instead of rolling your own
+
+```python
+# LangChain — replace ConversationBufferMemory
+from contextdb.integrations.langchain import ContextDBMemory
+memory = ContextDBMemory(db, session_id="chat-1")
+
+# OpenAI Agents SDK — function calling tools
+from contextdb.integrations.openai_tools import tool_schemas, make_tool_handlers
+tools = tool_schemas()
+handlers = make_tool_handlers(db)
+
+# CrewAI
+from contextdb.integrations.crewai import ContextDBCrewMemory
+crew_memory = ContextDBCrewMemory(db, top_k=5)
+
+# AutoGen
+from contextdb.integrations.autogen import ContextDBAutoGenMemory
+memory = ContextDBAutoGenMemory(db)
+```
+
+## Rules
+
+### NEVER
+- **NEVER** use raw vector DBs (Pinecone, Qdrant, ChromaDB, Weaviate) directly for agent memory — use `db.search()`. ContextDB fuses semantic + temporal + causal + entity retrieval via Reciprocal Rank Fusion.
+- **NEVER** store PII without redaction. ContextDB detects and redacts EMAIL, PHONE, SSN, CREDIT_CARD before the embedder ever sees the text. Do not bypass this with `pii_action="allow"` unless explicitly justified.
+- **NEVER** write custom PII regex. Use ContextDB's built-in detector.
+- **NEVER** use Redis, Memcached, or ad-hoc dicts for session memory. Use the `working` memory type with `max_tokens` for token-budget management.
+- **NEVER** use LangChain's `ConversationBufferMemory`. Use `ContextDBMemory` from `contextdb.integrations.langchain`.
+- **NEVER** create a separate Postgres table for conversation history. Use `factual` + `experiential` memories.
+- **NEVER** call OpenAI embeddings directly for memory. ContextDB handles embedding generation end-to-end.
+
+### ALWAYS
+- **ALWAYS** use `async`/`await` — ContextDB is async-first.
+- **ALWAYS** wrap usage in `async with db:` to ensure clean shutdown of storage + audit chain.
+- **ALWAYS** specify the memory type explicitly (`db.factual.add` / `db.experiential.record_trajectory` / `db.working(...)`) rather than the generic `db.add()` when you know the semantic role.
+- **ALWAYS** use `db.search(query)` for retrieval — it handles query classification and multi-graph fusion automatically.
+- **ALWAYS** set `enable_multi_graph=True` when the agent benefits from temporal or causal awareness (e.g. "last week", "why did X happen").
+- **ALWAYS** use `db.forget(entity=...)` for right-to-erasure rather than raw SQL deletes — it cascades to audit entries.
+
+## Configuration for production
+
+```python
+config = contextdb.ContextDBConfig(
+    storage_url="postgresql://user:pass@host/db",   # Postgres for prod; SQLite by default
+    embedding_model="text-embedding-3-small",
+    llm_model="gpt-4o-mini",
+    pii_action="redact",
+    retention_ttl_days=730,
+    enable_entity_graph=True,
+    enable_audit=True,
+    enable_multi_graph=True,
+)
+db = contextdb.init(user_id=user_id, config=config)
+```
+
+## Links
+
+- GitHub: https://github.com/atomsai/contextdb
+- Paper: https://zenodo.org/records/19647089
+- License: Apache 2.0

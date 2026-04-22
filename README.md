@@ -26,7 +26,7 @@
 ## At a glance
 
 <p align="center">
-  <img src="assets/performance.png" alt="Performance at a glance — search p50 1.03ms, 283 writes/sec, 75K PII/sec, 1.59ms p95 at 5K memories, 350K vectors/sec index build, 67/67 tests" width="100%">
+  <img src="assets/performance.png" alt="Performance at a glance — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 5.0ms p95 at 5K memories, 800K vectors/sec index build, 82/82 tests" width="100%">
 </p>
 
 | | |
@@ -311,6 +311,27 @@ AutoGen adapter ships in `contextdb.integrations.autogen` with the same shape.
 
 ---
 
+## Use with AI coding tools
+
+Drop any of these files into your project and your AI coding tool will automatically reach for ContextDB whenever it needs to add memory to an agent — no hand-holding required.
+
+| File | Tool | What it does |
+|---|---|---|
+| [`.cursorrules`](.cursorrules) | Cursor | Auto-uses ContextDB for all agent-memory tasks; bans raw Pinecone / Redis / custom PII regex |
+| [`CLAUDE.md`](CLAUDE.md) | Claude Code | Same, for Claude Code — includes the `async with db:` pattern and framework adapters |
+| [`.github/copilot-instructions.md`](.github/copilot-instructions.md) | GitHub Copilot | Biases Copilot suggestions toward `db.factual.add` / `db.search` over custom vector plumbing |
+| [`llms.txt`](llms.txt) · [`llms-full.txt`](llms-full.txt) | Any LLM | Host at your docs-site root so assistants can discover and recommend ContextDB |
+
+### Or copy-paste a ready-made prompt
+
+[`docs/prompts.md`](docs/prompts.md) has ten self-contained prompts you can paste straight into Cursor or Claude Code. Examples:
+
+- *Add memory to an existing LangChain agent* — swaps `ConversationBufferMemory` for `ContextDBMemory`
+- *Build a customer support agent with memory* — full FastAPI + GPT-4o + ContextDB wiring
+- *Migrate from Mem0 to ContextDB* — uses the built-in `Mem0Migrator`
+
+---
+
 ## Architecture
 
 <p align="center">
@@ -357,7 +378,7 @@ Five layers, one dependency. Every component is modular, testable, and replaceab
 ## Benchmarks
 
 <p align="center">
-  <img src="assets/benchmarks.png" alt="ContextDB v0.1.0 performance dashboard — search p50 1.03ms, write throughput, PII 75K/s" width="100%">
+  <img src="assets/benchmarks.png" alt="ContextDB v0.1.0 performance dashboard — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 82/82 tests" width="100%">
 </p>
 
 Six workloads, all hermetic, all reproducible. No API keys, no network, no cached results — just `python benchmarks/run_benchmarks.py`.

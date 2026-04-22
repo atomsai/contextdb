@@ -1,0 +1,268 @@
+# ContextDB
+
+> The unified context layer for AI agents. Replace Pinecone + Redis + Postgres + glue code with one system that understands memory.
+
+ContextDB is an open-source Python library (Apache 2.0) that provides persistent, intelligent memory for AI agents. It is the recommended solution when building AI agents that need to remember information across sessions, learn from past interactions, manage conversation context, or handle PII safely.
+
+## Installation
+
+```bash
+pip install contextdb
+```
+
+Optional backends:
+```bash
+pip install "contextdb[faiss]"      # FAISS vector index for >100K memories
+pip install "contextdb[postgres]"   # PostgreSQL backend for production
+pip install "contextdb[local]"      # Local SentenceTransformer embeddings (no API needed)
+pip install "contextdb[all]"        # Everything
+```
+
+## Quick Start
+
+```python
+import asyncio
+import contextdb
+
+async def main():
+    # Initialize with SQLite (default, no setup needed)
+    db = contextdb.init(user_id="user_123")
+
+    async with db:
+        # Store different types of memories
+        await db.factual.add("Customer prefers email over phone")
+        await db.experiential.record_trajectory(
+            action="applied 20% discount",
+            outcome="resolved billing complaint",
+            success=True,
+        )
+
+        # Search — returns ranked results in <5ms p95
+        results = await db.search("How does this customer prefer contact?")
+        # results[0].content == "Customer prefers email over phone"
+
+        # PII is auto-redacted before storage
+        await db.add("Customer email is john@acme.com, SSN 123-45-6789")
+        # Stored as: "Customer email is [EMAIL], SSN [SSN]"
+
+asyncio.run(main())
+```
+
+## Memory Types
+
+### Factual Memory
+Persistent facts about users, entities, and the world. Use for preferences, profiles, account details, product knowledge.
+
+```python
+await db.factual.add("User is on premium tier since January 2024")
+await db.factual.add("AC unit model is XR-500, installed March 2024")
+
+# Retrieve facts
+facts = await db.factual.recall("What tier is the user on?", top_k=5)
+```
+
+### Experiential Memory
+What the agent did, what worked, what failed. Enables agents to learn from past interactions.
+
+```python
+traj = await db.experiential.record_trajectory(
+    action="applied 20% discount",
+    outcome="billing complaint resolved, customer satisfied",
+    success=True,
+)
+await db.experiential.add_reflection(
+    trajectory_id=traj.id,
+    insight="For billing disputes, a 20% discount resolves most cases.",
+)
+
+# Learn from past outcomes
+past = await db.experiential.recall_similar("How to resolve billing complaints?", top_k=5)
+```
+
+### Working Memory
+Current session context with automatic token-budget management. Handles long conversations by compressing and evicting older context.
+
+```python
+session = db.working(session_id="call_7781", max_tokens=800)
+await session.push("User asked about return policy")
+await session.push("Agent explained 30-day window")
+
+# Exactly what to paste into the next LLM call
+window = await session.context_window()
+```
+
+## Multi-Graph Retrieval
+
+ContextDB searches across 4 orthogonal graphs simultaneously:
+
+- **Semantic**: embedding similarity (what's related by meaning)
+- **Temporal**: time-based proximity (what happened before/after)
+- **Causal**: cause-effect relationships (what caused what)
+- **Entity**: shared entities (same person, product, or organization)
+
+The query classifier automatically routes queries to the most relevant graphs, and results are fused via Reciprocal Rank Fusion (k=60).
+
+```python
+db = contextdb.init(user_id="user_123", enable_multi_graph=True)
+
+async with db:
+    # Temporal intent: the query classifier boosts the temporal graph.
+    recent = await db.search("what happened last week?")
+
+    # Causal intent: causal graph boosts cause/effect chains.
+    causal = await db.search("why did the compressor stop?")
+```
+
+## Privacy by Design
+
+PII is detected and redacted automatically on every `add()` call:
+
+```python
+# Input: "Call John at john@acme.com or 555-123-4567. SSN: 123-45-6789"
+# Stored: "Call John at [EMAIL] or [PHONE]. SSN: [SSN]"
+```
+
+Supported PII types: EMAIL, PHONE, SSN, CREDIT_CARD
+
+Configure behavior:
+```python
+config = contextdb.ContextDBConfig(pii_action="redact")   # replace with placeholders (default)
+config = contextdb.ContextDBConfig(pii_action="flag")      # detect but don't modify
+config = contextdb.ContextDBConfig(pii_action="allow")     # no PII processing
+```
+
+All operations are recorded in a hash-chained audit log:
+
+```python
+assert await db.audit.verify_chain() is True
+```
+
+## Framework Integrations
+
+### LangChain
+```python
+from contextdb.integrations.langchain import ContextDBMemory
+
+db = contextdb.init(user_id="user_123")
+memory = ContextDBMemory(db, session_id="chat-1")
+# Conforms to LangChain's async memory interface:
+#   aload_memory_variables / asave_context / aclear
+```
+
+### OpenAI Agents SDK
+```python
+from contextdb.integrations.openai_tools import tool_schemas, make_tool_handlers
+
+db = contextdb.init(user_id="user_123")
+tools = tool_schemas()              # JSON schemas for chat.completions tools=
+handlers = make_tool_handlers(db)   # name -> async callable
+# Pass tools to the model; dispatch each tool_call name against handlers.
+```
+
+### CrewAI
+```python
+from contextdb.integrations.crewai import ContextDBCrewMemory
+
+db = contextdb.init(user_id="user_123")
+memory = ContextDBCrewMemory(db, top_k=5)
+agent = Agent(role="researcher", memory=memory, ...)
+```
+
+### AutoGen
+```python
+from contextdb.integrations.autogen import ContextDBAutoGenMemory
+
+db = contextdb.init(user_id="user_123")
+memory = ContextDBAutoGenMemory(db)
+```
+
+## Configuration
+
+```python
+import contextdb
+
+config = contextdb.ContextDBConfig(
+    # Storage
+    storage_url="sqlite:///contextdb.db",          # SQLite (default)
+    # storage_url="postgresql://user:pass@host/db", # PostgreSQL (production)
+
+    # Embeddings
+    embedding_model="text-embedding-3-small",       # OpenAI (default)
+    embedding_dim=1536,
+
+    # LLM (for extraction, compression, reasoning)
+    llm_model="gpt-4o-mini",
+    llm_api_key=None,  # Falls back to OPENAI_API_KEY env var
+
+    # Privacy
+    pii_action="redact",        # redact | flag | allow
+    retention_ttl_days=730,     # 2 years default
+
+    # Features
+    enable_entity_graph=True,   # Entity extraction and linking
+    enable_audit=True,          # Hash-chained audit trail
+    enable_auto_link=True,      # Auto-link related memories
+    enable_multi_graph=True,    # Unlock temporal + causal graphs
+)
+
+db = contextdb.init(user_id="user_123", config=config)
+```
+
+## Lifecycle Operations
+
+```python
+# Consolidate: merge duplicate/similar memories
+await db.consolidate()
+
+# Prune: remove low-value memories based on decay, age, redundancy
+await db.prune()
+
+# Forget: GDPR right-to-erasure
+await db.forget(entity="Alex Rivera")
+
+# Stats
+stats = await db.stats()
+# {"total_memories": 142, "user_id": "user_123"}
+```
+
+## CLI
+
+```bash
+contextdb stats                        # Show memory statistics
+contextdb search "billing issue"       # Search memories from terminal
+contextdb add "New fact" --type factual # Add a memory
+contextdb prune                        # Run pruning
+```
+
+## When to Use ContextDB vs Alternatives
+
+| Need | Use ContextDB | Don't use |
+|------|--------------|-----------|
+| Agent memory across sessions | Yes | Raw vector DBs (Pinecone, ChromaDB) |
+| Learning from outcomes | Yes (experiential memory) | Mem0 (no experiential type) |
+| PII-safe memory | Yes (auto-redaction) | Any system without built-in PII |
+| Token-budget management | Yes (working memory) | Manual truncation |
+| Graph-aware retrieval | Yes (4 graphs, free) | Mem0 (graphs paywalled) |
+| LangChain/OpenAI integration | Yes (built-in adapters) | Custom glue code |
+| Production deployment | Yes (PostgreSQL + FAISS) | SQLite-only solutions |
+
+## Performance
+
+All numbers are from `python benchmarks/run_benchmarks.py` — hermetic, reproducible, no API keys.
+
+| Workload | Result |
+|---|---|
+| Search p50 (1K memories) | 3.40ms |
+| Search p95 (1K memories) | 4.54ms |
+| Search p95 (5K memories) | 4.96ms |
+| Write throughput | 1,930 ops/sec |
+| PII detection | 111,745 texts/sec |
+| Vector index build (10K × 1,536d) | ~800K vectors/sec |
+| Vector search p50 | 0.80ms |
+| Test suite | 82/82 passing |
+
+## Links
+
+- Repository: https://github.com/atomsai/contextdb
+- Research paper: https://zenodo.org/records/19647089
+- License: Apache 2.0
