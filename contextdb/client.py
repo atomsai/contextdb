@@ -82,7 +82,10 @@ class ContextDB:
         )
         await self._store.initialize()
         self._llm = get_llm_provider(self.config.llm_model, self.config.llm_api_key)
-        self._pii = PIIDetector(action=self.config.pii_action)
+        self._pii = PIIDetector(
+            action=self.config.pii_action,
+            encryption_key=self.config.pii_encryption_key,
+        )
 
         # Graphs (local imports to avoid circular references at module load)
         from contextdb.graphs.semantic import SemanticGraph
@@ -346,20 +349,41 @@ class ContextDB:
         entity: str | None = None,
         older_than: timedelta | None = None,
     ) -> int:
+        """Bulk-delete memories.
+
+        Age-only forgets use a single SQL ``DELETE`` to stay O(1) in Python
+        memory. Entity-scoped forgets must inspect JSON-serialised
+        ``entity_mentions`` and free-text content, so they stream memories in
+        500-row pages rather than loading the full table.
+        """
         await self._ensure_init()
         store = self._require_store()
-        memories = await store.list_memories(user_id=user_id, limit=100000)
+
+        # Fast path: age-only deletes lower to a single SQL statement.
+        if entity is None and older_than is not None:
+            cutoff = datetime.now(tz=timezone.utc) - older_than
+            deleted = await store.delete_older_than(
+                cutoff.isoformat(), user_id=user_id, hard=True
+            )
+            if self._audit is not None:
+                await self._audit.log(
+                    operation="ERASE",
+                    user_id=user_id,
+                    details={"bulk": True, "count": deleted, "older_than": older_than.days},
+                )
+            return deleted
+
         now = datetime.now(tz=timezone.utc)
+        needle = entity.lower() if entity is not None else None
         deleted = 0
-        for m in memories:
+        async for m in store.iter_memories(user_id=user_id, batch_size=500):
             matches = True
-            if entity is not None:
+            if needle is not None:
                 ents = [e.lower() for e in m.entity_mentions]
-                if entity.lower() not in ents and entity.lower() not in m.content.lower():
+                if needle not in ents and needle not in m.content.lower():
                     matches = False
-            if older_than is not None:
-                if now - m.created_at < older_than:
-                    matches = False
+            if older_than is not None and now - m.created_at < older_than:
+                matches = False
             if matches:
                 await store.delete(m.id, hard=True)
                 deleted += 1
@@ -376,12 +400,7 @@ class ContextDB:
         await self._ensure_init()
         store = self._require_store()
         total = await store.count(self.user_id)
-        by_type: dict[str, int] = {}
-        for mt in MemoryType:
-            items = await store.list_memories(
-                user_id=self.user_id, memory_type=mt, limit=100000
-            )
-            by_type[mt.value] = len(items)
+        by_type = await store.count_by_type(self.user_id)
         return {
             "total_memories": total,
             "user_id": self.user_id,

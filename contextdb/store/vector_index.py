@@ -105,7 +105,16 @@ class NumpyIndex(VectorIndex):
 
 
 class FAISSIndex(VectorIndex):
-    """FAISS-backed index; requires the ``faiss-cpu`` optional dependency."""
+    """FAISS-backed index; requires the ``faiss-cpu`` optional dependency.
+
+    Removal is O(1): an id goes into :attr:`_removed_ids` and is filtered out
+    of every :meth:`search` call. The underlying FAISS index is rebuilt when
+    the tombstone set exceeds :attr:`_rebuild_threshold` (10% by default) so
+    search over-fetch stays bounded and index memory does not grow without
+    limit.
+    """
+
+    _rebuild_threshold: float = 0.1
 
     def __init__(self, dimension: int, index_type: str = "flat") -> None:
         try:
@@ -120,6 +129,7 @@ class FAISSIndex(VectorIndex):
         self.index_type = index_type
         self._index: Any = faiss.IndexFlatIP(dimension)
         self._ids: list[str] = []
+        self._removed_ids: set[str] = set()
 
     def add(self, ids: list[str], embeddings: NDArray[np.float32]) -> None:
         if not ids:
@@ -128,32 +138,67 @@ class FAISSIndex(VectorIndex):
         normalized = _normalize(reshaped)
         self._index.add(normalized)
         self._ids.extend(ids)
+        # Re-adding a previously tombstoned id clears the tombstone.
+        if self._removed_ids:
+            self._removed_ids.difference_update(ids)
 
     def search(self, query: NDArray[np.float32], top_k: int = 10) -> list[tuple[str, float]]:
-        if len(self._ids) == 0:
+        if not self._ids:
             return []
+        # Over-fetch when tombstones are present so filtered-out hits do not
+        # starve the final top-k.
+        live = len(self._ids) - len(self._removed_ids)
+        if live <= 0:
+            return []
+        fetch = min(top_k + len(self._removed_ids), len(self._ids))
         q = _normalize(np.asarray(query, dtype=np.float32).reshape(1, self.dimension))
-        scores, indices = self._index.search(q, min(top_k, len(self._ids)))
+        scores, indices = self._index.search(q, fetch)
         out: list[tuple[str, float]] = []
         for score, idx in zip(scores[0], indices[0], strict=False):
             if idx == -1:
                 continue
-            out.append((self._ids[int(idx)], float(score)))
+            mid = self._ids[int(idx)]
+            if mid in self._removed_ids:
+                continue
+            out.append((mid, float(score)))
+            if len(out) >= top_k:
+                break
         return out
 
     def remove(self, ids: list[str]) -> None:
-        drop = set(ids)
-        keep_idx = [i for i, mid in enumerate(self._ids) if mid not in drop]
-        if len(keep_idx) == len(self._ids):
+        """Tombstone the given ids. Amortized O(1) per id.
+
+        When tombstones exceed :attr:`_rebuild_threshold` of the live set,
+        :meth:`rebuild` is triggered to reclaim memory.
+        """
+        if not ids:
             return
-        # FAISS flat index: rebuild from scratch.
-        self._index = self._faiss.IndexFlatIP(self.dimension)
+        present = {mid for mid in ids if mid in self._ids}
+        if not present:
+            return
+        self._removed_ids.update(present)
+        total = len(self._ids)
+        if total and len(self._removed_ids) / total > self._rebuild_threshold:
+            self.rebuild()
+
+    def rebuild(self) -> None:
+        """Reconstruct the underlying FAISS index without the tombstoned ids.
+
+        Expensive (O(n) over live vectors) but amortized across removals.
+        """
+        if not self._removed_ids:
+            return
+        keep_idx = [i for i, mid in enumerate(self._ids) if mid not in self._removed_ids]
         new_ids = [self._ids[i] for i in keep_idx]
+        if keep_idx:
+            snapshot = self._vectors_snapshot()
+            vectors = np.stack([snapshot[i] for i in keep_idx], axis=0).astype(np.float32)
+        else:
+            vectors = np.zeros((0, self.dimension), dtype=np.float32)
+        self._index = self._faiss.IndexFlatIP(self.dimension)
         self._ids = []
-        if new_ids:
-            vectors = np.stack(
-                [self._vectors_snapshot()[i] for i in keep_idx], axis=0
-            ).astype(np.float32)
+        self._removed_ids.clear()
+        if len(new_ids):
             self._index.add(vectors)
             self._ids = new_ids
 
@@ -164,15 +209,20 @@ class FAISSIndex(VectorIndex):
         ).astype(np.float32)
 
     def save(self, path: str) -> None:
+        # Persisted state always reflects the post-rebuild, tombstone-free view
+        # so stale ids never leak into a reloaded index.
+        if self._removed_ids:
+            self.rebuild()
         self._faiss.write_index(self._index, f"{path}.faiss")
         Path(f"{path}.ids").write_bytes(pickle.dumps(self._ids))
 
     def load(self, path: str) -> None:
         self._index = self._faiss.read_index(f"{path}.faiss")
         self._ids = pickle.loads(Path(f"{path}.ids").read_bytes())
+        self._removed_ids = set()
 
     def __len__(self) -> int:
-        return len(self._ids)
+        return len(self._ids) - len(self._removed_ids)
 
 
 def get_vector_index(dimension: int, prefer: str = "auto") -> VectorIndex:

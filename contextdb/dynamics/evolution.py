@@ -61,10 +61,10 @@ class Consolidator:
         )
 
     async def consolidate(self, min_cluster_size: int = 5) -> list[MemoryItem]:
+        """Walk active memories in 500-row pages, merging dense clusters."""
         visited: set[str] = set()
         summaries: list[MemoryItem] = []
-        memories = await self.store.list_memories(limit=100000)
-        for memory in memories:
+        async for memory in self.store.iter_memories(batch_size=500):
             if memory.id in visited or memory.status != MemoryStatus.ACTIVE:
                 continue
             neighbors = await self.semantic.get_neighbors(
@@ -139,10 +139,9 @@ class Pruner:
         raise ValueError(f"Unknown pruning strategy: {strategy}")
 
     async def _prune_decay(self, threshold: float) -> int:
-        memories = await self.store.list_memories(limit=100000)
         now = datetime.now(tz=timezone.utc)
         pruned = 0
-        for memory in memories:
+        async for memory in self.store.iter_memories(batch_size=500):
             age_days = max(1.0, (now - memory.created_at).total_seconds() / 86400.0)
             score = (memory.access_count + 1) / age_days
             if score < threshold:
@@ -151,19 +150,17 @@ class Pruner:
         return pruned
 
     async def _prune_age(self, older_than: timedelta) -> int:
-        memories = await self.store.list_memories(limit=100000)
         now = datetime.now(tz=timezone.utc)
         pruned = 0
-        for memory in memories:
+        async for memory in self.store.iter_memories(batch_size=500):
             if now - memory.created_at > older_than:
                 await self.store.update(memory.id, status=MemoryStatus.ARCHIVED)
                 pruned += 1
         return pruned
 
     async def _prune_redundancy(self, semantic: SemanticGraph, max_neighbors: int) -> int:
-        memories = await self.store.list_memories(limit=100000)
         pruned = 0
-        for memory in memories:
+        async for memory in self.store.iter_memories(batch_size=500):
             neighbors = await semantic.get_neighbors(memory.id, max_results=max_neighbors + 1)
             if len(neighbors) > max_neighbors:
                 await self.store.update(memory.id, status=MemoryStatus.ARCHIVED)

@@ -306,6 +306,38 @@ Five layers, one dependency. Privacy is a layer, not an afterthought — PII nev
 
 ---
 
+## Benchmarks
+
+Runnable locally — no API keys required. MockEmbedding (dim=1536) + MockLLM isolate storage and retrieval from provider latency.
+
+```bash
+python benchmarks/run_benchmarks.py
+```
+
+The suite covers six workloads:
+
+1. **Write throughput** — 1,000 sequential `add()` calls.
+2. **Search latency** — p50 / p95 / p99 over 100 queries against 1,000 memories.
+3. **Search vs scale** — the same workload at 100, 500, 1K, and 5K memories.
+4. **PII detection** — 1,000 redactions with correctness verification.
+5. **Vector index** — 10K × 1,536-dim vectors, 100 queries, self-retrieval check.
+6. **End-to-end** — a customer-support agent scenario with PII redaction roundtrip.
+
+Representative results (MacBook-class laptop, no FAISS):
+
+| Metric | Result |
+|---|---|
+| Write throughput | 1,900+ writes/sec |
+| Search p50 @ 1K memories | ~3ms |
+| Search p95 @ 5K memories | ~5ms |
+| PII redaction | 100,000+ texts/sec |
+| Vector search @ 10K × 1,536d | p95 ~1ms |
+| Self-retrieval accuracy | PASS |
+
+All benchmarks run against a tempfile SQLite DB, so they are reproducible and hermetic.
+
+---
+
 ## Why not just use...
 
 **Mem0?** Graph intelligence is gated behind the paid tier. No experiential memory for trajectories and reflections. No RL-trained memory manager. No working memory with token budgets.

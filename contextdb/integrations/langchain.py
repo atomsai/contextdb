@@ -6,14 +6,62 @@ conversational memory interface (``load_memory_variables`` /
 **not** import ``langchain`` here — keeping the dependency optional — and
 instead structure the adapter so that LangChain's duck-typed interface is
 met by method signatures alone.
+
+Both sync and async entry points are provided. LangChain code paths still
+exist that call memories synchronously, so the sync wrappers bridge to the
+async client via :func:`asyncio.run` / ``run_until_complete``. The async
+methods (``aload_memory_variables`` / ``asave_context`` / ``aclear``) are
+preferred whenever the caller is already inside an event loop.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import asyncio
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from contextdb.client import ContextDB
+
+_T = TypeVar("_T")
+
+
+def _run_sync(coro: Awaitable[_T]) -> _T:
+    """Execute an awaitable from synchronous code.
+
+    Uses ``asyncio.run`` when no loop is running. When called from inside an
+    already-running loop (e.g. a Jupyter cell) we fall back to creating a
+    dedicated loop on a worker thread — ``asyncio.run`` refuses to nest, and
+    ``run_until_complete`` on a running loop deadlocks. Callers inside a
+    loop should prefer the ``a*`` methods.
+    """
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is None:
+        return asyncio.run(coro)  # type: ignore[arg-type]
+
+    import threading
+
+    result: list[_T] = []
+    error: list[BaseException] = []
+
+    def _worker() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            result.append(loop.run_until_complete(coro))
+        except BaseException as exc:  # noqa: BLE001
+            error.append(exc)
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_worker)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result[0]
 
 
 class ContextDBMemory:
@@ -44,6 +92,8 @@ class ContextDBMemory:
     def memory_variables(self) -> list[str]:
         return [self.memory_key]
 
+    # -- Async (preferred) ------------------------------------------------- #
+
     async def aload_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
         query = str(inputs.get("input", "")) or str(next(iter(inputs.values()), ""))
         hits = await self.client.search(query, top_k=self.top_k) if query else []
@@ -66,3 +116,17 @@ class ContextDBMemory:
     async def aclear(self) -> None:
         working = self.client.working(self.session_id, max_tokens=self.max_tokens)
         await working.clear()
+
+    # -- Sync (LangChain legacy paths) ------------------------------------- #
+
+    def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Synchronous wrapper over :meth:`aload_memory_variables`."""
+        return _run_sync(self.aload_memory_variables(inputs))
+
+    def save_context(self, inputs: dict[str, Any], outputs: dict[str, Any]) -> None:
+        """Synchronous wrapper over :meth:`asave_context`."""
+        _run_sync(self.asave_context(inputs, outputs))
+
+    def clear(self) -> None:
+        """Synchronous wrapper over :meth:`aclear`."""
+        _run_sync(self.aclear())

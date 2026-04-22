@@ -7,8 +7,9 @@ for fast similarity search. The index is rebuilt on first use if missing.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -27,7 +28,7 @@ from contextdb.store.base import BaseStore
 from contextdb.store.vector_index import VectorIndex, get_vector_index
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -115,7 +116,14 @@ def _row_to_item(row: Mapping[str, Any]) -> MemoryItem:
 
 
 class SQLiteStore(BaseStore):
-    """Durable, async SQLite store with in-memory vector index cache."""
+    """Durable, async SQLite store with in-memory vector index cache.
+
+    Single-process concurrency: writes are serialized through an
+    :class:`asyncio.Lock` while reads run freely. WAL journaling is enabled
+    so concurrent readers never block a writer. For multi-process access
+    use the PostgreSQL backend instead — SQLite's file-level locking does
+    not guarantee safety across processes even with WAL.
+    """
 
     def __init__(
         self,
@@ -130,12 +138,18 @@ class SQLiteStore(BaseStore):
         self._index: VectorIndex | None = vector_index
         self._embedding_dim = embedding_dim
         self._index_loaded = False
+        self._write_lock: asyncio.Lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         if self._conn is not None:
             return
         self._conn = await aiosqlite.connect(self._path)
         self._conn.row_factory = aiosqlite.Row
+        # WAL lets readers proceed while a writer holds the reserved lock; the
+        # busy timeout absorbs short contention windows instead of raising
+        # SQLITE_BUSY. Both are safe to re-execute on reconnect.
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.executescript(SCHEMA)
         await self._conn.commit()
 
@@ -167,39 +181,40 @@ class SQLiteStore(BaseStore):
     async def add(self, item: MemoryItem) -> MemoryItem:
         conn = self._require_conn()
         blob, dim = _embedding_to_blob(item.embedding)
-        await conn.execute(
-            """
-            INSERT INTO memories (
-                id, content, embedding, embedding_dim, memory_type, source,
-                metadata, user_id, event_time, ingestion_time, pii_annotations,
-                retention_policy, created_at, updated_at, access_count, last_accessed,
-                confidence, status, entity_mentions, tags
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                item.id,
-                item.content,
-                blob,
-                dim,
-                item.memory_type.value,
-                item.source,
-                json.dumps(item.metadata),
-                self._user_id,
-                item.event_time.isoformat() if item.event_time else None,
-                item.ingestion_time.isoformat(),
-                json.dumps([a.model_dump(mode="json") for a in item.pii_annotations]),
-                item.retention_policy.model_dump_json() if item.retention_policy else None,
-                item.created_at.isoformat(),
-                item.updated_at.isoformat(),
-                item.access_count,
-                item.last_accessed.isoformat() if item.last_accessed else None,
-                item.confidence,
-                item.status.value,
-                json.dumps(item.entity_mentions),
-                json.dumps(item.tags),
-            ),
-        )
-        await conn.commit()
+        async with self._write_lock:
+            await conn.execute(
+                """
+                INSERT INTO memories (
+                    id, content, embedding, embedding_dim, memory_type, source,
+                    metadata, user_id, event_time, ingestion_time, pii_annotations,
+                    retention_policy, created_at, updated_at, access_count, last_accessed,
+                    confidence, status, entity_mentions, tags
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    item.id,
+                    item.content,
+                    blob,
+                    dim,
+                    item.memory_type.value,
+                    item.source,
+                    json.dumps(item.metadata),
+                    self._user_id,
+                    item.event_time.isoformat() if item.event_time else None,
+                    item.ingestion_time.isoformat(),
+                    json.dumps([a.model_dump(mode="json") for a in item.pii_annotations]),
+                    item.retention_policy.model_dump_json() if item.retention_policy else None,
+                    item.created_at.isoformat(),
+                    item.updated_at.isoformat(),
+                    item.access_count,
+                    item.last_accessed.isoformat() if item.last_accessed else None,
+                    item.confidence,
+                    item.status.value,
+                    json.dumps(item.entity_mentions),
+                    json.dumps(item.tags),
+                ),
+            )
+            await conn.commit()
         if item.embedding is not None:
             index = await self._ensure_index()
             index.add([item.id], np.asarray([item.embedding], dtype=np.float32))
@@ -283,8 +298,11 @@ class SQLiteStore(BaseStore):
         params.append(now.isoformat())
         params.append(memory_id)
 
-        await conn.execute(f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", params)
-        await conn.commit()
+        async with self._write_lock:
+            await conn.execute(
+                f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", params
+            )
+            await conn.commit()
 
         if "embedding" in kwargs:
             index = await self._ensure_index()
@@ -308,15 +326,16 @@ class SQLiteStore(BaseStore):
 
     async def delete(self, memory_id: str, hard: bool = False) -> None:
         conn = self._require_conn()
-        if hard:
-            await conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-        else:
-            now = datetime.now().isoformat()
-            await conn.execute(
-                "UPDATE memories SET status = ?, updated_at = ? WHERE id = ?",
-                (MemoryStatus.DELETED.value, now, memory_id),
-            )
-        await conn.commit()
+        async with self._write_lock:
+            if hard:
+                await conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            else:
+                now = datetime.now(tz=timezone.utc).isoformat()
+                await conn.execute(
+                    "UPDATE memories SET status = ?, updated_at = ? WHERE id = ?",
+                    (MemoryStatus.DELETED.value, now, memory_id),
+                )
+            await conn.commit()
         if self._index is not None and self._index_loaded:
             self._index.remove([memory_id])
 
@@ -394,6 +413,85 @@ class SQLiteStore(BaseStore):
             )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+    async def count_by_type(self, user_id: str | None = None) -> dict[str, int]:
+        """Return active-memory counts bucketed by :class:`MemoryType`.
+
+        Single aggregate SQL query — does not load rows into memory.
+        """
+        conn = self._require_conn()
+        params: list[Any] = []
+        sql = "SELECT memory_type, COUNT(*) FROM memories WHERE status = 'ACTIVE'"
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        sql += " GROUP BY memory_type"
+        cursor = await conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        counts: dict[str, int] = {mt.value: 0 for mt in MemoryType}
+        for row in rows:
+            counts[str(row[0])] = int(row[1])
+        return counts
+
+    async def iter_memories(
+        self,
+        user_id: str | None = None,
+        memory_type: MemoryType | None = None,
+        status: MemoryStatus = MemoryStatus.ACTIVE,
+        batch_size: int = 500,
+    ) -> AsyncIterator[MemoryItem]:
+        """Stream memories in fixed-size pages to bound peak memory."""
+        offset = 0
+        while True:
+            page = await self.list_memories(
+                user_id=user_id,
+                memory_type=memory_type,
+                status=status,
+                limit=batch_size,
+                offset=offset,
+            )
+            if not page:
+                return
+            for item in page:
+                yield item
+            if len(page) < batch_size:
+                return
+            offset += batch_size
+
+    async def delete_older_than(
+        self,
+        iso_cutoff: str,
+        user_id: str | None = None,
+        hard: bool = True,
+    ) -> int:
+        """Bulk delete memories with ``created_at < iso_cutoff``.
+
+        Returns the number of affected rows. Runs as a single SQL statement
+        rather than load-then-delete, so it stays O(1) in Python memory.
+        """
+        conn = self._require_conn()
+        params: list[Any] = [iso_cutoff]
+        where = "created_at < ?"
+        if user_id is not None:
+            where += " AND user_id = ?"
+            params.append(user_id)
+        async with self._write_lock:
+            if hard:
+                cursor = await conn.execute(
+                    f"DELETE FROM memories WHERE {where}", params
+                )
+            else:
+                cursor = await conn.execute(
+                    f"UPDATE memories SET status = 'DELETED', updated_at = ? "
+                    f"WHERE {where}",
+                    [datetime.now(tz=timezone.utc).isoformat(), *params],
+                )
+            await conn.commit()
+        # Drop removed ids from the index lazily on next rebuild.
+        if self._index is not None and self._index_loaded:
+            self._index_loaded = False
+            self._index = None
+        return int(cursor.rowcount or 0)
 
     async def close(self) -> None:
         if self._conn is not None:
