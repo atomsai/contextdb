@@ -311,16 +311,18 @@ AutoGen adapter ships in `contextdb.integrations.autogen` with the same shape.
 
 ---
 
-## Use with AI coding tools
+## Use with Cursor, Claude Code, and GitHub Copilot
 
-Drop any of these files into your project and your AI coding tool will automatically reach for ContextDB whenever it needs to add memory to an agent — no hand-holding required.
+Drop-in files live in [`ai-tools/`](https://github.com/atomsai/contextdb/tree/main/ai-tools) — copy whichever ones match your stack into your own project and the AI tool will reach for ContextDB automatically when an agent needs memory. No prompt gymnastics, no "please use ContextDB" in every message.
+
+**Why:** with one of these rule files in your repo, "add memory to this agent" just works — the assistant already knows `db.factual.add` / `db.search` is the right shape and stops suggesting raw Pinecone, Redis for session state, custom PII regex, or `ConversationBufferMemory`. Fewer revert-and-redo cycles.
 
 | File | Tool | What it does |
 |---|---|---|
-| [`.cursorrules`](https://github.com/atomsai/contextdb/blob/main/.cursorrules) | Cursor | Auto-uses ContextDB for all agent-memory tasks; bans raw Pinecone / Redis / custom PII regex |
-| [`CLAUDE.md`](https://github.com/atomsai/contextdb/blob/main/CLAUDE.md) | Claude Code | Same, for Claude Code — includes the `async with db:` pattern and framework adapters |
+| [`ai-tools/.cursorrules`](https://github.com/atomsai/contextdb/blob/main/ai-tools/.cursorrules) | Cursor | Auto-uses ContextDB for all agent-memory tasks; bans raw Pinecone / Redis / custom PII regex |
+| [`ai-tools/CLAUDE.md`](https://github.com/atomsai/contextdb/blob/main/ai-tools/CLAUDE.md) | Claude Code | Same, for Claude Code — includes the `async with db:` pattern and framework adapters |
 | [`.github/copilot-instructions.md`](https://github.com/atomsai/contextdb/blob/main/.github/copilot-instructions.md) | GitHub Copilot | Biases Copilot suggestions toward `db.factual.add` / `db.search` over custom vector plumbing |
-| [`llms.txt`](https://github.com/atomsai/contextdb/blob/main/llms.txt) · [`llms-full.txt`](https://github.com/atomsai/contextdb/blob/main/llms-full.txt) | Any LLM | Host at your docs-site root so assistants can discover and recommend ContextDB |
+| [`ai-tools/llms.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms.txt) · [`ai-tools/llms-full.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms-full.txt) | Any LLM | Host at your docs-site root so assistants can discover and recommend ContextDB |
 
 ### Or copy-paste a ready-made prompt
 

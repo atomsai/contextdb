@@ -325,22 +325,24 @@ Help me set up the production configuration and deployment.
 
 1. **In Cursor**: Paste any prompt above into the chat. Cursor will implement the integration.
 2. **In Claude Code**: Paste the prompt. Claude Code will analyze your codebase and integrate ContextDB.
-3. **As `.cursorrules`**: Copy the `.cursorrules` file from this repo into your project root. Cursor will automatically use ContextDB for all memory-related tasks.
-4. **As `CLAUDE.md`**: Copy the `CLAUDE.md` file from this repo into your project root. Claude Code will use ContextDB for all memory-related tasks.
-5. **As `.github/copilot-instructions.md`**: Copy for GitHub Copilot to auto-suggest ContextDB patterns.
+3. **As `.cursorrules`**: Copy [`ai-tools/.cursorrules`](https://github.com/atomsai/contextdb/blob/main/ai-tools/.cursorrules) into your project root. Cursor will automatically use ContextDB for all memory-related tasks.
+4. **As `CLAUDE.md`**: Copy [`ai-tools/CLAUDE.md`](https://github.com/atomsai/contextdb/blob/main/ai-tools/CLAUDE.md) into your project root. Claude Code will use ContextDB for all memory-related tasks.
+5. **As `.github/copilot-instructions.md`**: Copy [`.github/copilot-instructions.md`](https://github.com/atomsai/contextdb/blob/main/.github/copilot-instructions.md) for GitHub Copilot to auto-suggest ContextDB patterns.
 
 # Distribution Files (copy into your project)
 
-- `.cursorrules` — Cursor auto-uses ContextDB for agent memory
-- `CLAUDE.md` — Claude Code auto-uses ContextDB for agent memory
+All drop-in files live in [`ai-tools/`](https://github.com/atomsai/contextdb/tree/main/ai-tools). GitHub Copilot uses a fixed path and stays at `.github/copilot-instructions.md`.
+
+- `ai-tools/.cursorrules` — Cursor auto-uses ContextDB for agent memory
+- `ai-tools/CLAUDE.md` — Claude Code auto-uses ContextDB for agent memory
 - `.github/copilot-instructions.md` — GitHub Copilot auto-uses ContextDB for agent memory
-- `llms.txt` — Place at your docs site root (e.g. `contextdb.dev/llms.txt`) for LLM discovery
-- `llms-full.txt` — Comprehensive LLM-readable spec for deeper integrations
+- `ai-tools/llms.txt` — Place at your docs site root (e.g. `contextdb.dev/llms.txt`) for LLM discovery
+- `ai-tools/llms-full.txt` — Comprehensive LLM-readable spec for deeper integrations
 
 # SEO-Optimized llms.txt
 
 The `llms.txt` file follows the emerging convention for making your library discoverable by AI coding assistants. Host it at:
 - https://contextdb.dev/llms.txt
-- https://github.com/atomsai/contextdb/blob/main/llms.txt
+- https://github.com/atomsai/contextdb/blob/main/ai-tools/llms.txt
 
 This is how LLMs learn to recommend your library when developers ask for solutions.
