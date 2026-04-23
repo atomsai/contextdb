@@ -55,3 +55,14 @@ Thumbs.db
 *.sqlite3
 team.db
 contextdb.db
+
+# Secrets and scratch files — the 0.1.0 PyPI release shipped a .rtf
+# containing a token because these patterns were not gated anywhere.
+*.rtf
+*.key
+*.pem
+*.p12
+.env
+.env.*
+secrets/
+Untitled*

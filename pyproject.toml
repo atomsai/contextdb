@@ -105,3 +105,41 @@ addopts = "-v --tb=short"
 
 [tool.hatch.build.targets.wheel]
 packages = ["contextdb"]
+
+# Defense in depth against accidentally shipping secrets or scratch files
+# in the sdist (the 0.1.0 release got burned by a stray .rtf containing a
+# token). Whatever lands here is excluded from both the sdist and the
+# wheel build contexts.
+[tool.hatch.build]
+exclude = [
+    "*.rtf",
+    "*.key",
+    "*.pem",
+    "*.p12",
+    ".env",
+    ".env.*",
+    "secrets/",
+    "dist/",
+    ".venv/",
+    "prompts for users/",
+    "*.pdf",
+    "contextdb-*.md",
+    "agentic-memory-*.md",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "*.rtf",
+    "*.key",
+    "*.pem",
+    "*.p12",
+    ".env",
+    ".env.*",
+    "secrets/",
+    "dist/",
+    ".venv/",
+    "prompts for users/",
+    "*.pdf",
+    "contextdb-*.md",
+    "agentic-memory-*.md",
+]
