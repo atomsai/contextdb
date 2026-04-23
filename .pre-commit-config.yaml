@@ -1,0 +1,31 @@
+# Run locally before each commit:
+#     pip install -e ".[dev]"
+#     pre-commit install
+#
+# Then every git commit is gated on the hooks below. CI also runs them
+# via .github/workflows/ci.yml, so skipping locally is only a temporary
+# papercut — the PR will fail.
+
+repos:
+  # Secret scanning — the reason this file exists. Gitleaks scans the
+  # staged diff for tokens (PyPI, GitHub, AWS, Stripe, Slack, generic
+  # entropy-high strings, ...). First run auto-downloads the binary.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # Lightweight second-layer checks from the standard pre-commit-hooks
+  # repo. `detect-private-key` catches PEM-style keys that gitleaks'
+  # default rules occasionally miss in non-standard encodings.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict

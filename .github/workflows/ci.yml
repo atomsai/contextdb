@@ -7,6 +7,31 @@ on:
     branches: [main]
 
 jobs:
+  # Gitleaks + pre-commit checks. Scans the staged diff (and on CI the
+  # full history via --no-git-log=false by default) for tokens. Runs in
+  # parallel with `test` so secret leaks fail the PR even if contributors
+  # skipped `pre-commit install` locally.
+  secret-scan:
+    name: Secret scan (gitleaks + pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs the full history to scan across commits,
+          # not just the shallow checkout.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit on all files
+        run: pre-commit run --all-files --show-diff-on-failure
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

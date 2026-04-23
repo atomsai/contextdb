@@ -513,6 +513,16 @@ Python 3.10+. No system dependencies for the default install — SQLite and NumP
 
 Apache 2.0 — see [LICENSE](https://github.com/atomsai/contextdb/blob/main/LICENSE). See [`docs/architecture.md`](https://github.com/atomsai/contextdb/blob/main/docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
 
+**Local setup:**
+
+```bash
+pip install -e ".[dev]"
+pre-commit install   # enables gitleaks + basic hygiene checks on every commit
+pytest               # runs the test suite
+```
+
+The pre-commit hook blocks commits that would leak secrets (PyPI / GitHub / AWS tokens, private keys, etc.). CI re-runs the same checks, so you can't push past a leak even if the hook is skipped locally.
+
 If you use ContextDB in research, please cite the paper: [zenodo.org/records/19647089](https://zenodo.org/records/19647089).
 
 ---
