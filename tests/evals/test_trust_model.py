@@ -755,3 +755,92 @@ async def test_eval_7_1_forget_user_leaves_zero_residue(tmp_path: Path) -> None:
         assert len(entry.details["deleted_ids"]) == deleted
     finally:
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Epic 8 — Realtime + agent-host integrations
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_8_1_pipecat_seed_recall_across_processes(tmp_path: Path) -> None:
+    """EVAL-8.1: the Pipecat seed/recall pair — seed call ends, a NEW process
+    (fresh client over the same DB file) answers with the seeded fact, and
+    the wish carries requires_confirmation."""
+    from contextdb.integrations.pipecat import ContextDBPipecatProcessor
+
+    # --- Process 1: the seed call. Transcripts stored per turn. ---
+    db1 = contextdb.init(
+        user_id="caller-7", config=make_config(tmp_path, name="calls.db")
+    )
+    proc1 = ContextDBPipecatProcessor(db1, user_id="caller-7")
+    await proc1.handle_final_transcript("Hi, my name is Priya Sharma.", role="user")
+    await proc1.handle_final_transcript("I'd like to come in Thursday.", role="user")
+    await db1.close()
+
+    # --- Process 2: a new client over the same store; the recall call. ---
+    db2 = contextdb.init(
+        user_id="caller-7", config=make_config(tmp_path, name="calls.db")
+    )
+    proc2 = ContextDBPipecatProcessor(db2, user_id="caller-7")
+    try:
+        ctx = await proc2.recall_context("When does the caller want to come in?")
+        assert "Thursday" in ctx, ctx
+        assert ctx.startswith(WRAPPER_OPEN)  # Epic 5 wrapper on injection
+        assert "REQUIRES CONFIRMATION" in ctx  # the wish is not actionable
+
+        ctx2 = await proc2.recall_context("What is the caller's name?")
+        assert "Priya Sharma" in ctx2, ctx2
+
+        # The wish must not gate an action; a corroborated fact would.
+        action_ctx = await proc2.recall_context(
+            "come in Thursday", for_action=True
+        )
+        assert "Thursday" not in action_ctx
+    finally:
+        await db2.close()
+
+
+async def test_eval_8_1b_mcp_server_and_livekit_smoke(tmp_path: Path) -> None:
+    """Epic 8 (rest): the MCP server exposes remember/recall/
+    recall_for_action/forget, and the LiveKit hook stores + recalls."""
+    from contextdb.integrations.livekit import ContextDBLiveKitMemory
+    from contextdb.mcp import ContextDBMCPServer
+
+    db = contextdb.init(user_id="u9", config=make_config(tmp_path))
+    try:
+        server = ContextDBMCPServer(db)
+        tools = {t["name"] for t in server.list_tools()}
+        assert {"remember", "recall", "recall_for_action", "forget"} <= tools
+
+        remembered = await server.call_tool(
+            "remember",
+            {
+                "content": "The deploy window is Friday 2am",
+                "entity": "deploy",
+                "attribute": "window",
+                "confidence": 0.9,
+                "action_relevant": True,
+            },
+        )
+        assert remembered["memory"]["requires_confirmation"] is False
+
+        recalled = await server.call_tool("recall", {"query": "deploy window"})
+        assert "Friday 2am" in recalled["context"]
+        assert recalled["context"].startswith(WRAPPER_OPEN)
+
+        actionable = await server.call_tool(
+            "recall_for_action", {"query": "deploy window"}
+        )
+        assert any("Friday 2am" in m["content"] for m in actionable["memories"])
+
+        forgotten = await server.call_tool("forget", {"user_id": "u9"})
+        assert forgotten["deleted"] >= 1
+        assert forgotten["verified"] is True
+
+        livekit = ContextDBLiveKitMemory(db, user_id="u9")
+        await livekit.on_user_turn("My invoice number is 4482")
+        hook_ctx = await livekit.pre_llm_hook("invoice number")
+        assert "4482" in hook_ctx
+        assert hook_ctx.startswith(WRAPPER_OPEN)
+    finally:
+        await db.close()

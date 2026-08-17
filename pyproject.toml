@@ -95,7 +95,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["faiss", "sentence_transformers"]
+module = ["faiss", "sentence_transformers", "mcp", "mcp.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
