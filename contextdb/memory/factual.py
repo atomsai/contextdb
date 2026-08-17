@@ -65,6 +65,25 @@ class FactualMemory:
             attribute_key=attribute,
         )
 
+    async def add_fast(
+        self,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        entity_mentions: list[str] | None = None,
+    ) -> MemoryItem:
+        """Realtime write path — never calls an LLM (Epic 3).
+
+        Stores raw content with an inline embedding and marks it
+        ``pending_consolidation``; recall sees it immediately with
+        ``confidence=0.5`` until the consolidator re-types it.
+        """
+        return await self.client.add_fast(
+            content,
+            memory_type=MemoryType.FACTUAL,
+            metadata=metadata,
+            entity_mentions=entity_mentions,
+        )
+
     async def recall(
         self,
         query: str,

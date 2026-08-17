@@ -14,6 +14,8 @@ The client is lazy: resources are created on the first await, which keeps
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import warnings
 from datetime import datetime, timedelta, timezone
@@ -21,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from contextdb.core.config import ContextDBConfig
 from contextdb.core.exceptions import ContextDBError
-from contextdb.core.models import EpistemicSource, MemoryItem, MemoryType
+from contextdb.core.models import EpistemicSource, MemoryItem, MemoryStatus, MemoryType
 from contextdb.dynamics.trust import TrustEngine, infer_action_relevant
 from contextdb.privacy.pii_detector import PIIDetector
 from contextdb.store.sqlite_store import SQLiteStore
@@ -65,6 +67,7 @@ class ContextDB:
         self._memory_bus: MemoryBus | None = None
         self._rl_manager: RLMemoryManager | None = None
         self._trust: TrustEngine | None = None
+        self._consolidation_task: asyncio.Task[None] | None = None
         self._initialized = False
         self._warn_if_llm_unusable()
 
@@ -368,6 +371,158 @@ class ContextDB:
             )
         return items
 
+    async def add_fast(
+        self,
+        content: str,
+        memory_type: MemoryType = MemoryType.FACTUAL,
+        metadata: dict[str, Any] | None = None,
+        entity_mentions: list[str] | None = None,
+    ) -> MemoryItem:
+        """Realtime write path: append raw + embed inline, NEVER call an LLM.
+
+        For voice loops, where an extraction call on the write path is a
+        missed turn. The memory is recallable immediately as raw content
+        (``epistemic_source="user_stated"``, ``confidence=0.5``,
+        ``pending_consolidation=True``); extraction, slot dedupe, and
+        contradiction handling happen later in :meth:`consolidate_pending`
+        or the background consolidation loop.
+
+        PII is still processed before embedding — the privacy rule is not
+        a latency trade-off we make.
+        """
+        await self._ensure_init()
+        assert self._pii is not None
+        assert self._embedder is not None
+        store = self._require_store()
+
+        processed, pii_annotations = self._pii.process(content)
+        embedding = (await self._embedder.embed([processed]))[0]
+        now = datetime.now(tz=timezone.utc)
+        item = MemoryItem(
+            content=processed,
+            embedding=embedding,
+            memory_type=memory_type,
+            metadata=metadata or {},
+            event_time=now,
+            pii_annotations=pii_annotations,
+            entity_mentions=entity_mentions or [],
+            epistemic_source="user_stated",
+            confidence=0.5,
+            action_relevant=infer_action_relevant(processed),
+            valid_from=now,
+            pending_consolidation=True,
+        )
+        stored = await store.add(item)
+        if self._audit is not None:
+            await self._audit.log(
+                operation="CREATE",
+                memory_id=stored.id,
+                user_id=self.user_id,
+                details={"memory_type": memory_type.value, "fast": True},
+            )
+        return stored
+
+    async def consolidate_pending(self, batch_size: int = 50) -> int:
+        """Drain the fast-write queue: extract, dedupe, supersede behind the write.
+
+        Each pending memory is run through LLM extraction. Extracted facts
+        are written through the trust engine (slot dedupe / corroboration /
+        supersede) and the raw memory is archived; when extraction yields
+        nothing, the raw memory itself is upgraded in place (heuristic
+        action-relevance) so nothing is ever lost. Returns the number of
+        pending memories processed.
+        """
+        await self._ensure_init()
+        assert self._formation is not None
+        assert self._trust is not None
+        assert self._pii is not None
+        assert self._embedder is not None
+        store = self._require_store()
+
+        pending = await store.list_pending_consolidation(limit=batch_size)
+        processed_count = 0
+        for raw in pending:
+            facts = await self._formation.extractor.extract(raw.content)
+            if not facts:
+                await store.update(
+                    raw.id,
+                    pending_consolidation=False,
+                    action_relevant=infer_action_relevant(raw.content),
+                )
+                await self._link(raw.id)
+                processed_count += 1
+                continue
+            for fact in facts:
+                fact_content, fact_pii = self._pii.process(fact["content"])
+                embedding = (await self._embedder.embed([fact_content]))[0]
+                new_item = MemoryItem(
+                    content=fact_content,
+                    embedding=embedding,
+                    memory_type=MemoryType(fact["memory_type"]),
+                    source=raw.source,
+                    pii_annotations=fact_pii,
+                    entity_mentions=list(fact.get("entities", [])),
+                    epistemic_source=fact.get("epistemic_source", "user_stated"),
+                    confidence=float(fact.get("confidence", 0.8)),
+                    action_relevant=bool(
+                        fact.get("action_relevant", infer_action_relevant(fact_content))
+                    ),
+                    entity_key=fact.get("entity_key"),
+                    attribute_key=fact.get("attribute_key"),
+                    metadata={"consolidated_from": [raw.id]},
+                )
+                saved, outcome = await self._trust.write(new_item, user_id=self.user_id)
+                if outcome in {"added", "superseded"}:
+                    await self._link(saved.id)
+            await store.update(
+                raw.id,
+                pending_consolidation=False,
+                status=MemoryStatus.ARCHIVED,
+            )
+            processed_count += 1
+        return processed_count
+
+    async def start_consolidation_loop(
+        self, interval_seconds: float = 5.0
+    ) -> asyncio.Task[None]:
+        """Background consolidator for realtime hosts (Epic 3).
+
+        Batch hosts can call :meth:`consolidate` / :meth:`consolidate_pending`
+        directly instead. The loop keeps running until :meth:`close`.
+        """
+        await self._ensure_init()
+        if self._consolidation_task is not None and not self._consolidation_task.done():
+            return self._consolidation_task
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                try:
+                    await self.consolidate_pending()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _logger.exception("background consolidation pass failed")
+
+        self._consolidation_task = asyncio.create_task(_loop())
+        return self._consolidation_task
+
+    async def _link(self, memory_id: str) -> None:
+        """Best-effort graph auto-link for a stored memory."""
+        if not (self.config.enable_auto_link and self._auto_linker is not None):
+            return
+        item = await self._require_store().get_raw(memory_id)
+        if item is None:
+            return
+        await self._auto_linker.link(
+            item.id,
+            {
+                "content": item.content,
+                "embedding": item.embedding,
+                "event_time": item.event_time,
+            },
+        )
+
     async def get(self, memory_id: str) -> MemoryItem | None:
         await self._ensure_init()
         item = await self._require_store().get(memory_id)
@@ -517,8 +672,10 @@ class ContextDB:
         }
 
     async def consolidate(self, min_cluster_size: int = 5) -> list[MemoryItem]:
+        """Batch consolidation: drain the fast-write queue, then cluster-merge."""
         await self._ensure_init()
         assert self._consolidator is not None
+        await self.consolidate_pending()
         return await self._consolidator.consolidate(min_cluster_size=min_cluster_size)
 
     async def prune(self, strategy: str = "decay", **kwargs: Any) -> int:
@@ -612,6 +769,11 @@ class ContextDB:
     # ------------------------------------------------------------------ #
 
     async def close(self) -> None:
+        if self._consolidation_task is not None:
+            self._consolidation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._consolidation_task
+            self._consolidation_task = None
         if self._store is not None:
             await self._store.close()
         self._initialized = False

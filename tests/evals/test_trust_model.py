@@ -12,8 +12,10 @@ Conventions:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
+import time
 import warnings
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timezone
@@ -460,3 +462,80 @@ async def test_eval_2_3_audit_log_shows_supersede_edge(db: ContextDB) -> None:
     assert supersede, "no SUPERSEDE audit entry"
     assert supersede[0].details["superseded_by"] == second.id
     assert await db.audit.verify_chain()
+
+
+# ---------------------------------------------------------------------------
+# Epic 3 — Latency-tiered write path
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_3_1_write_p95_under_10ms_while_consolidation_runs(
+    tmp_path: Path,
+) -> None:
+    """EVAL-3.1: 1K add_fast writes with p95 < 10ms while the consolidator
+    churns through the pending queue behind the write."""
+    db = contextdb.init(user_id="eval-user", config=make_config(tmp_path))
+    slow_llm = MockLLM()
+    original_generate = slow_llm.generate
+
+    async def slow_generate(*args: Any, **kwargs: Any) -> str:
+        # Simulate a real extraction call occupying the event loop.
+        await asyncio.sleep(0.0005)
+        return await original_generate(*args, **kwargs)
+
+    slow_llm.generate = slow_generate  # type: ignore[method-assign]
+    db._llm = slow_llm
+    try:
+        await db._ensure_init()
+        stop = asyncio.Event()
+
+        async def churn() -> None:
+            while not stop.is_set():
+                await db.consolidate_pending(batch_size=25)
+                await asyncio.sleep(0.001)
+
+        task = asyncio.create_task(churn())
+        latencies_ms: list[float] = []
+        for i in range(1000):
+            start = time.perf_counter()
+            await db.factual.add_fast(f"caller utterance number {i} about ordering pizza")
+            latencies_ms.append((time.perf_counter() - start) * 1000.0)
+        stop.set()
+        await task
+
+        latencies_ms.sort()
+        p95 = latencies_ms[int(0.95 * len(latencies_ms)) - 1]
+        p50 = latencies_ms[len(latencies_ms) // 2]
+        assert p95 < 10.0, f"write p95 {p95:.2f}ms (p50 {p50:.2f}ms) exceeds 10ms"
+    finally:
+        await db.close()
+
+
+async def test_eval_3_2_fast_write_recallable_before_consolidation(
+    tmp_path: Path,
+) -> None:
+    """EVAL-3.2: a fast-written fact is recallable immediately, marked
+    pending_consolidation, and the write never touched the LLM."""
+    db = contextdb.init(user_id="eval-user", config=make_config(tmp_path))
+    spy_llm = MockLLM()
+    db._llm = spy_llm
+    try:
+        item = await db.factual.add_fast("The caller prefers email over phone")
+        assert item.pending_consolidation is True
+        assert item.confidence == 0.5
+        assert item.epistemic_source == "user_stated"
+
+        recalled = await db.factual.recall("prefers email")
+        assert any(m.id == item.id for m in recalled)
+
+        assert spy_llm.calls == [], "add_fast must never call the LLM"
+
+        # Consolidation drains the queue behind the write.
+        drained = await db.consolidate_pending()
+        assert drained >= 1
+        assert db._store is not None
+        after = await db._store.get_raw(item.id)
+        assert after is not None
+        assert after.pending_consolidation is False
+    finally:
+        await db.close()
