@@ -35,8 +35,12 @@ class BaseStore(ABC):
         """Partial update; unknown keys raise ValueError."""
 
     @abstractmethod
-    async def delete(self, memory_id: str, hard: bool = False) -> None:
-        """Soft delete by default (status=DELETED); ``hard=True`` removes the row."""
+    async def delete(self, memory_id: str, hard: bool = False) -> bool:
+        """Soft delete by default (status=DELETED); ``hard=True`` removes the row.
+
+        Returns True when a row was actually affected; False for missing or
+        out-of-scope ids.
+        """
 
     @abstractmethod
     async def search_by_embedding(

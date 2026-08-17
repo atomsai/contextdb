@@ -844,3 +844,72 @@ async def test_eval_8_1b_mcp_server_and_livekit_smoke(tmp_path: Path) -> None:
         assert hook_ctx.startswith(WRAPPER_OPEN)
     finally:
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Expert addendum — multi-scope isolation (cross-tenant bleed)
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_isolation_no_cross_tenant_bleed(tmp_path: Path) -> None:
+    """A scoped client must never recall, list, count, get, or delete
+    another tenant's memories — and slot dedupe must not cross tenants."""
+    def cfg() -> ContextDBConfig:
+        return make_config(tmp_path, name="shared.db")
+
+    alice = contextdb.init(user_id="alice", config=cfg())
+    secret = await alice.factual.add(
+        "Alice's secret account PIN is 7788",
+        entity="account",
+        attribute="pin",
+        source="user_stated",
+        confidence=0.99,
+        action_relevant=True,
+    )
+    await alice.close()
+
+    bob = contextdb.init(user_id="bob", config=cfg())
+    try:
+        await bob.factual.add("Bob's favorite color is green")
+
+        # Recall: no bleed, even with a query aimed at Alice's fact.
+        hits = await bob.factual.recall("account PIN")
+        assert all("7788" not in h.content for h in hits)
+
+        # List/stats: only Bob's memories exist as far as Bob can tell.
+        assert (await bob.stats())["total_memories"] == 1
+        assert all("Alice" not in m.content for m in await bob.factual.list_facts())
+
+        # Point access: Alice's id is indistinguishable from missing.
+        assert await bob.get(secret.id) is None
+        await bob.delete(secret.id, hard=True)  # must no-op, not error
+
+        # Same slot, different tenant: no corroboration, no supersede.
+        await bob.factual.add(
+            "Bob's account PIN is 1122", entity="account", attribute="pin"
+        )
+    finally:
+        await bob.close()
+
+    alice2 = contextdb.init(user_id="alice", config=cfg())
+    try:
+        still = await alice2.get(secret.id)
+        assert still is not None, "Bob's delete reached Alice's memory"
+        assert "7788" in still.content
+        assert still.valid_until is None and still.superseded_by is None
+        assert still.corroboration_count == 1
+    finally:
+        await alice2.close()
+
+    # An unscoped client is the admin/global context: sees across tenants
+    # and can enforce erasure for any of them.
+    admin = contextdb.init(config=cfg())
+    try:
+        assert (await admin.stats())["total_memories"] == 3
+        deleted = await admin.forget_user("alice")
+        assert deleted == 1
+        assert await admin.verify_forgotten("alice") is True
+        # Bob's memories are untouched by Alice's erasure.
+        assert (await admin.stats())["total_memories"] == 2
+    finally:
+        await admin.close()

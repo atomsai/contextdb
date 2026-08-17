@@ -604,8 +604,8 @@ class ContextDB:
 
     async def delete(self, memory_id: str, hard: bool = False) -> None:
         await self._ensure_init()
-        await self._require_store().delete(memory_id, hard=hard)
-        if self._audit is not None:
+        deleted = await self._require_store().delete(memory_id, hard=hard)
+        if deleted and self._audit is not None:
             await self._audit.log(
                 operation="DELETE", memory_id=memory_id, user_id=self.user_id
             )
@@ -873,9 +873,15 @@ class ContextDB:
 
         if self._audit is not None:
             write_entries = await self._audit.get_history(memory_id=memory_id, limit=1000)
-            writes = [e.model_dump(mode="json") for e in write_entries]
+            writes = [
+                e.model_dump(mode="json")
+                for e in write_entries
+                if self.user_id is None or e.user_id == self.user_id
+            ]
 
             all_entries = await self._audit.get_history(limit=10000)
+            if self.user_id is not None:
+                all_entries = [e for e in all_entries if e.user_id == self.user_id]
             surfaced_by = [
                 e.model_dump(mode="json")
                 for e in all_entries

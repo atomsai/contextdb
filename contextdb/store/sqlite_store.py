@@ -230,6 +230,22 @@ class SQLiteStore(BaseStore):
             raise StorageError("SQLiteStore is not initialized. Call initialize() first.")
         return self._conn
 
+    def _resolve_scope(self, user_id: str | None) -> str | None:
+        """Tenant confinement: a scoped store can ONLY see its own user.
+
+        Scope is fixed at construction (``ContextDB(user_id=...)``) and
+        cannot be widened by per-call parameters — that is what makes
+        cross-tenant bleed structurally impossible rather than
+        conventionally avoided. An unscoped store (``user_id=None``) is an
+        admin/global context and may filter by an explicit ``user_id``.
+        """
+        if self._user_id is not None:
+            return self._user_id
+        return user_id
+
+    def _scope_allows(self, row_user_id: str | None) -> bool:
+        return self._user_id is None or row_user_id == self._user_id
+
     async def _ensure_index(self) -> VectorIndex:
         if self._index is None:
             self._index = get_vector_index(self._embedding_dim)
@@ -309,7 +325,7 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         cursor = await conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
         row = await cursor.fetchone()
-        if row is None:
+        if row is None or not self._scope_allows(row["user_id"]):
             return None
         item = _row_to_item(dict(row))
         now_iso = datetime.now(tz=item.ingestion_time.tzinfo).isoformat()
@@ -420,10 +436,20 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         cursor = await conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
         row = await cursor.fetchone()
-        return _row_to_item(dict(row)) if row else None
+        if row is None or not self._scope_allows(row["user_id"]):
+            return None
+        return _row_to_item(dict(row))
 
-    async def delete(self, memory_id: str, hard: bool = False) -> None:
+    async def delete(self, memory_id: str, hard: bool = False) -> bool:
+        """Delete a memory. Returns False for missing or out-of-scope ids —
+        callers must not audit-log a deletion that did not happen."""
         conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT user_id FROM memories WHERE id = ?", (memory_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None or not self._scope_allows(row["user_id"]):
+            return False
         async with self._write_lock:
             if hard:
                 await conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
@@ -436,6 +462,7 @@ class SQLiteStore(BaseStore):
             await conn.commit()
         if self._index is not None and self._index_loaded:
             self._index.remove([memory_id])
+        return True
 
     async def search_by_embedding(
         self,
@@ -446,16 +473,20 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         index = await self._ensure_index()
         query = np.asarray(embedding, dtype=np.float32)
-        # Fetch extra to allow for filter culling.
-        raw = index.search(query, top_k=top_k * 3 if filters else top_k)
+        scope = self._resolve_scope(None)
+        # Fetch extra to allow for filter/scope culling.
+        raw = index.search(query, top_k=top_k * 3 if (filters or scope) else top_k)
         if not raw:
             return []
 
         ids = [mid for mid, _ in raw]
         placeholders = ",".join(["?"] * len(ids))
-        cursor = await conn.execute(
-            f"SELECT * FROM memories WHERE id IN ({placeholders})", ids
-        )
+        sql = f"SELECT * FROM memories WHERE id IN ({placeholders})"
+        params: list[Any] = list(ids)
+        if scope is not None:
+            sql += " AND user_id = ?"
+            params.append(scope)
+        cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         items_by_id = {row["id"]: _row_to_item(dict(row)) for row in rows}
 
@@ -490,9 +521,10 @@ class SQLiteStore(BaseStore):
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
-        if user_id is not None:
+        scope = self._resolve_scope(user_id)
+        if scope is not None:
             clauses.append("user_id = ?")
-            params.append(user_id)
+            params.append(scope)
         if memory_type is not None:
             clauses.append("memory_type = ?")
             params.append(memory_type.value)
@@ -523,6 +555,10 @@ class SQLiteStore(BaseStore):
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
+        scope = self._resolve_scope(None)
+        if scope is not None:
+            clauses.append("user_id = ?")
+            params.append(scope)
         cursor = await conn.execute(
             f"SELECT * FROM memories WHERE {' AND '.join(clauses)}",
             params,
@@ -533,24 +569,32 @@ class SQLiteStore(BaseStore):
     async def list_pending_consolidation(self, limit: int = 100) -> list[MemoryItem]:
         """Active memories written via ``add_fast`` awaiting consolidation."""
         conn = self._require_conn()
-        cursor = await conn.execute(
+        sql = (
             "SELECT * FROM memories WHERE pending_consolidation = 1 "
-            "AND status = 'ACTIVE' ORDER BY created_at ASC LIMIT ?",
-            (limit,),
+            "AND status = 'ACTIVE'"
         )
+        params: list[Any] = []
+        scope = self._resolve_scope(None)
+        if scope is not None:
+            sql += " AND user_id = ?"
+            params.append(scope)
+        sql += " ORDER BY created_at ASC LIMIT ?"
+        params.append(limit)
+        cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         return [_row_to_item(dict(row)) for row in rows]
 
     async def count(self, user_id: str | None = None) -> int:
         conn = self._require_conn()
-        if user_id is None:
+        scope = self._resolve_scope(user_id)
+        if scope is None:
             cursor = await conn.execute(
                 "SELECT COUNT(*) FROM memories WHERE status = 'ACTIVE'"
             )
         else:
             cursor = await conn.execute(
                 "SELECT COUNT(*) FROM memories WHERE status = 'ACTIVE' AND user_id = ?",
-                (user_id,),
+                (scope,),
             )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
@@ -558,9 +602,13 @@ class SQLiteStore(BaseStore):
     async def count_any_status(self, user_id: str) -> int:
         """Rows for a user across ALL lifecycle states — forgetting residue."""
         conn = self._require_conn()
-        cursor = await conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE user_id = ?", (user_id,)
-        )
+        scope = self._resolve_scope(user_id)
+        if scope is None:
+            cursor = await conn.execute("SELECT COUNT(*) FROM memories")
+        else:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ?", (scope,)
+            )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
@@ -577,9 +625,10 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         params: list[Any] = []
         sql = "SELECT memory_type, COUNT(*) FROM memories WHERE status = 'ACTIVE'"
-        if user_id is not None:
+        scope = self._resolve_scope(user_id)
+        if scope is not None:
             sql += " AND user_id = ?"
-            params.append(user_id)
+            params.append(scope)
         sql += " GROUP BY memory_type"
         cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
@@ -631,9 +680,10 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         params: list[Any] = [iso_cutoff]
         where = "created_at < ?"
-        if user_id is not None:
+        scope = self._resolve_scope(user_id)
+        if scope is not None:
             where += " AND user_id = ?"
-            params.append(user_id)
+            params.append(scope)
         async with self._write_lock:
             if hard:
                 cursor = await conn.execute(
