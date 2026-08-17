@@ -17,13 +17,22 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from contextdb.core.models import MemoryItem, MemoryStatus, MemoryType
+from contextdb.core.models import EpistemicSource, MemoryItem, MemoryStatus, MemoryType
+from contextdb.privacy.injection import screen_injection
 
 if TYPE_CHECKING:
     from contextdb.graphs.base import BaseGraph
     from contextdb.graphs.semantic import SemanticGraph
     from contextdb.store.sqlite_store import SQLiteStore
     from contextdb.utils.llm import LLMProvider
+
+# Conservative merge order: the summary of a cluster may only be as
+# trustworthy as its least trustworthy member.
+_SOURCE_RANK: dict[EpistemicSource, int] = {
+    "third_party": 0,
+    "agent_inferred": 1,
+    "user_stated": 2,
+}
 
 
 class AutoLinker:
@@ -86,13 +95,31 @@ class Consolidator:
             summary = await self._summarize([m.content for m in cluster_items])
             if not summary:
                 continue
+            # Trust-conservative merge: a summary must never be MORE trusted
+            # than its least trusted input. Otherwise consolidation launders
+            # epistemic status — five third-party hearsay fragments would
+            # emerge as a confident first-party fact.
             new_item = MemoryItem(
                 content=summary,
                 embedding=cluster_items[0].embedding,
                 memory_type=MemoryType.FACTUAL,
                 source="consolidator",
                 metadata={"consolidated_from": [m.id for m in cluster_items]},
+                epistemic_source=min(
+                    (m.epistemic_source for m in cluster_items),
+                    key=lambda s: _SOURCE_RANK[s],
+                ),
+                confidence=min(m.confidence for m in cluster_items),
+                corroboration_count=sum(m.corroboration_count for m in cluster_items),
+                action_relevant=any(m.action_relevant for m in cluster_items),
+                injection_suspect=any(m.injection_suspect for m in cluster_items),
             )
+            # The summary itself is LLM output derived from attacker-
+            # influenceable content — screen it like any other write.
+            if screen_injection(new_item.content):
+                new_item.injection_suspect = True
+                new_item.epistemic_source = "third_party"
+                new_item.confidence = 0.0
             stored = await self.store.add(new_item)
             summaries.append(stored)
             for m in cluster_items:
