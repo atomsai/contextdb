@@ -126,6 +126,32 @@ class RetentionPolicy(BaseModel):
     right_to_erasure: bool = True
 
 
+class MemoryExplanation(BaseModel):
+    """Reconstruction of a memory's formation and recall history (Epic 6).
+
+    Answers "why did the agent say that?" from the audit log alone:
+    which writes formed the memory, what it superseded / was superseded by,
+    and which queries surfaced it (with their logged score components).
+    """
+
+    memory_id: str
+    memory: dict[str, Any] | None = Field(
+        default=None, description="model_dump of the memory, if it still exists."
+    )
+    writes: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Audit entries (CREATE/CORROBORATE/SUPERSEDE/UPDATE/...) for this id.",
+    )
+    supersede_chain: list[str] = Field(
+        default_factory=list,
+        description="Ordered memory ids: oldest ancestor … this memory … latest successor.",
+    )
+    surfaced_by: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="SEARCH audit entries whose returned_ids include this memory.",
+    )
+
+
 class MemoryItem(BaseModel):
     """The canonical unit of memory in ContextDB.
 

@@ -647,3 +647,61 @@ async def test_eval_5_1c_ordinary_imperatives_are_not_flagged(db: ContextDB) -> 
     item = await db.factual.add("Remind me to call mom on Sunday")
     assert item.injection_suspect is False
     assert item.epistemic_source == "user_stated"
+
+
+# ---------------------------------------------------------------------------
+# Epic 6 — Recall-side observability
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_6_1_explain_reconstructs_formation_and_recall(
+    db: ContextDB,
+) -> None:
+    """EVAL-6.1: explain() returns source writes, the supersede chain, and
+    the queries that surfaced the memory — with score components."""
+    first = await db.factual.add(
+        "The meeting is at 3pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    second = await db.factual.add(
+        "Actually, the meeting is at 4pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    await db.factual.recall("when is the meeting")
+
+    exp = await db.explain(second.id)
+    assert exp.memory_id == second.id
+    assert exp.memory is not None
+    assert "4pm" in exp.memory["content"]
+
+    # Formation: the CREATE write for this memory is in its write history.
+    write_ops = [w["operation"] for w in exp.writes]
+    assert "CREATE" in write_ops
+
+    # Supersede chain reconstructed in both directions.
+    assert exp.supersede_chain == [first.id, second.id]
+    exp_old = await db.explain(first.id)
+    assert exp_old.supersede_chain == [first.id, second.id]
+    assert any(w["operation"] == "SUPERSEDE" for w in exp_old.writes)
+
+    # Recall history: the query surfaced the new fact, with scores logged.
+    assert any(
+        s["details"].get("query") == "when is the meeting" for s in exp.surfaced_by
+    )
+    entry = next(
+        s for s in exp.surfaced_by if s["details"].get("query") == "when is the meeting"
+    )
+    scores = entry["details"]["scores"]
+    assert second.id in scores
+    assert {"salience", "rrf", "age_days", "criticality_boost", "per_graph"} <= set(
+        scores[second.id]
+    )
+    assert second.id in entry["details"]["returned_ids"]

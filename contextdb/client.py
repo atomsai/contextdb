@@ -23,7 +23,13 @@ from typing import TYPE_CHECKING, Any
 
 from contextdb.core.config import ContextDBConfig
 from contextdb.core.exceptions import ContextDBError
-from contextdb.core.models import EpistemicSource, MemoryItem, MemoryStatus, MemoryType
+from contextdb.core.models import (
+    EpistemicSource,
+    MemoryExplanation,
+    MemoryItem,
+    MemoryStatus,
+    MemoryType,
+)
 from contextdb.dynamics.trust import TrustEngine, infer_action_relevant
 from contextdb.privacy.injection import screen_injection
 from contextdb.privacy.pii_detector import PIIDetector
@@ -370,8 +376,8 @@ class ContextDB:
         moment = as_of or datetime.now(tz=timezone.utc)
         query_embedding = (await self._embedder.embed([query]))[0]
         # Over-fetch so validity/type filtering cannot starve top_k.
-        items = await self._retrieval.search(query, query_embedding, top_k=top_k * 3)
-        items = [m for m in items if m.is_valid_at(moment)]
+        scored = await self._retrieval.search_scored(query, query_embedding, top_k=top_k * 3)
+        items = [s.item for s in scored if s.item.is_valid_at(moment)]
         if memory_type is not None:
             items = [m for m in items if m.memory_type == memory_type]
         if time_range is not None:
@@ -379,6 +385,7 @@ class ContextDB:
             items = [m for m in items if m.event_time and start <= m.event_time <= end]
         items = items[:top_k]
         if self._audit is not None:
+            score_by_id = {s.item.id: s for s in scored}
             await self._audit.log(
                 operation="SEARCH",
                 user_id=self.user_id,
@@ -387,6 +394,21 @@ class ContextDB:
                     "hits": len(items),
                     "returned_ids": [m.id for m in items],
                     "as_of": moment.isoformat(),
+                    # Recall-side observability (Epic 6): every recall logs
+                    # the full score decomposition per returned memory.
+                    "scores": {
+                        mid: {
+                            "final": round(s.final_score, 6),
+                            "rrf": round(s.rrf_score, 6),
+                            "salience": round(s.salience, 6),
+                            "age_days": round(s.age_days, 3),
+                            "recurrence": s.recurrence,
+                            "criticality_boost": s.criticality_boost,
+                            "per_graph": s.per_graph,
+                        }
+                        for mid, s in score_by_id.items()
+                        if mid in {m.id for m in items}
+                    },
                 },
             )
         return items
@@ -745,6 +767,69 @@ class ContextDB:
             assert isinstance(entity_graph, EntityGraph)
             return await entity_graph.get_entity_profile(name)
         return {"name": name, "memories": [], "attributes": {}}
+
+    async def explain(self, memory_id: str) -> MemoryExplanation:
+        """Reconstruct a memory's formation + recall history (Epic 6).
+
+        Combines the store with the audit log: the memory itself, every
+        write-side entry for its id, the full supersede chain in both
+        directions, and every search that surfaced it (with the score
+        components logged at recall time). The audit scan is O(log size);
+        that is the price of append-only tamper-evidence.
+        """
+        await self._ensure_init()
+        store = self._require_store()
+        item = await store.get_raw(memory_id)
+
+        writes: list[dict[str, Any]] = []
+        surfaced_by: list[dict[str, Any]] = []
+        chain: list[str] = [memory_id]
+
+        if self._audit is not None:
+            write_entries = await self._audit.get_history(memory_id=memory_id, limit=1000)
+            writes = [e.model_dump(mode="json") for e in write_entries]
+
+            all_entries = await self._audit.get_history(limit=10000)
+            surfaced_by = [
+                e.model_dump(mode="json")
+                for e in all_entries
+                if e.operation == "SEARCH"
+                and memory_id in (e.details.get("returned_ids") or [])
+            ]
+
+            # Supersede edges from the audit log: old_id -> new_id.
+            superseded_to_new: dict[str, str] = {}
+            for e in all_entries:
+                if e.operation == "SUPERSEDE" and e.memory_id:
+                    new_id = e.details.get("superseded_by")
+                    if isinstance(new_id, str):
+                        superseded_to_new[e.memory_id] = new_id
+
+            cursor = memory_id
+            while True:
+                predecessor = next(
+                    (old for old, new in superseded_to_new.items() if new == cursor),
+                    None,
+                )
+                if predecessor is None or predecessor in chain:
+                    break
+                chain.insert(0, predecessor)
+                cursor = predecessor
+            cursor = memory_id
+            while True:
+                successor = superseded_to_new.get(cursor)
+                if successor is None or successor in chain:
+                    break
+                chain.append(successor)
+                cursor = successor
+
+        return MemoryExplanation(
+            memory_id=memory_id,
+            memory=item.model_dump(mode="json") if item is not None else None,
+            writes=writes,
+            supersede_chain=chain,
+            surfaced_by=surfaced_by,
+        )
 
     # ------------------------------------------------------------------ #
     # Typed memory surfaces
