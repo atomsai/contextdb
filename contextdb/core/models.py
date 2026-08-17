@@ -291,6 +291,13 @@ class MemoryItem(BaseModel):
             "containing a real email can still retrieve '[EMAIL]'."
         ),
     )
+    contested: bool = Field(
+        default=False,
+        description=(
+            "True when an independent speaker asserted a different value "
+            "in this slot. Neither side may gate an action until confirm()."
+        ),
+    )
 
     @property
     def independent_corroboration(self) -> int:

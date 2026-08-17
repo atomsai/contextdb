@@ -68,6 +68,24 @@ def test_hospital_policy_excludes_first_party_health() -> None:
     assert TrustPolicy.hospital().is_trusted(item) is True
 
 
+def test_contested_is_untrusted_until_confirmed() -> None:
+    item = MemoryItem(
+        content="The meeting is at 3pm",
+        epistemic_source="user_stated",
+        confidence=0.99,
+        action_relevant=True,
+        entity_key="meeting",
+        attribute_key="time",
+        slot_class="booking",
+        contested=True,
+        corroborated_by=["session:a"],
+    )
+    policy = TrustPolicy()
+    assert policy.is_trusted(item) is False
+    item.confirmed = True
+    assert policy.is_trusted(item) is True
+
+
 def test_unknown_slot_is_untrusted_until_corroborated() -> None:
     item = MemoryItem(
         content="the flux capacitor is set to 1.21",

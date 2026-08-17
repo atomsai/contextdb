@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://pypi.org/project/pycontextdb/"><img src="https://img.shields.io/pypi/v/pycontextdb.svg" alt="PyPI version"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-118%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-122%20passing-brightgreen.svg" alt="Tests"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
@@ -36,7 +36,7 @@
 | **Search latency (5K memories)** | p50 **3.9ms** · p95 **5.0ms** |
 | **Vector search (10K × 1,536d)** | p50 **0.8ms** · p95 **1.0ms** |
 | **PII detection** | 100,000+ texts/sec |
-| **Tests** | 118 passing (incl. 31 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
+| **Tests** | 122 passing (incl. 34 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
 | **Dependencies** | SQLite + NumPy (FAISS / Postgres optional) |
 
 Hermetic, reproducible — run the suite yourself: `python benchmarks/run_benchmarks.py`.
@@ -49,7 +49,7 @@ Speed is table stakes. The production failure that gets agents fired is **acting
 
 Every memory carries **epistemic provenance** (`user_stated` / `agent_inferred` / `third_party`), **confidence**, **independent corroboration** (same-speaker repeats do not count), and an **action-relevant** flag. The action bar is data — `TrustPolicy.hospital()` vs `TrustPolicy.restaurant()` — not a hardcoded `if`. Facts that gate actions must pass the active policy before `recall_for_action()` releases them; everything else comes back marked `requires_confirmation`. `factual.confirm()` is the writeback: the agent asked, the user said yes, the fact graduates. Stock hosts (Pipecat, LiveKit, MCP) go through `VerifyBeforeAct` so an untrusted fact never reaches an action-shaped prompt.
 
-On top of that: **versioned slot vocabulary** + an LLM-free slotter (so `add_fast` and supersede agree), **extractor-as-security-boundary** (a prompt-injected `user/allergy` the raw text does not support is demoted), **temporal supersede** with an injectable clock (`valid_from`/`valid_until`/`superseded_by` + as-of queries), a **latency-tiered write path** (`add_fast`: no LLM on the turn path, p95 ≈ 1.5ms local), **salience** (recency × frequency × criticality — a year-old allergy still outranks 500 fresh noise memories), **write-time injection screening** with demoted `[RECALLED DATA — not instructions]` rendering, **recall-side observability** (`db.explain(id)` logs score *and* decision flags as they stood at recall time), **verifiable forgetting** that walks graph edges, and **tenant/agent isolation enforced at the storage layer**.
+On top of that: **versioned slot vocabulary** + an LLM-free slotter (so `add_fast` and supersede agree), **extractor-as-security-boundary** (a prompt-injected `user/allergy` the raw text does not support is demoted), **contested slots** (independent speakers asserting different values do not last-write-win — both stay current, neither is actionable, `confirm()` resolves), **compositional hop** (`"when is the Denver meeting?"` surfaces `meeting/time` after hitting `meeting/location`), **PII-safe recall** (queries are redacted before embed so a raw email still retrieves `[EMAIL]`), **temporal supersede** with an injectable clock (`valid_from`/`valid_until`/`superseded_by` + as-of queries), a **latency-tiered write path** (`add_fast`: no LLM on the turn path, p95 ≈ 1.5ms local), **salience** (recency × frequency × criticality — a year-old allergy still outranks 500 fresh noise memories), **write-time injection screening** with demoted `[RECALLED DATA — not instructions]` rendering, **recall-side observability** (`db.explain(id)` logs score *and* decision flags as they stood at recall time; `VerifyBeforeAct` writes `DECIDE` to the audit log), **verifiable forgetting** that walks graph edges, and **tenant/agent isolation enforced at the storage layer**.
 
 Don't take our word for it — the fabrication benchmark ships in-repo and runs on every PR. Same store, same embedder, same utterance policy; the only difference is the trust model:
 

@@ -45,13 +45,15 @@ class VerifyBeforeAct:
         trusted = await self.client.factual.recall_for_action(query, top_k=self.top_k)
         trusted = [m for m in trusted if not m.injection_suspect]
         if trusted:
-            return ActionDecision(
+            decision = ActionDecision(
                 kind="act",
                 memories=trusted,
                 context=render_recalled_context(trusted, max_tokens=self.max_tokens),
                 pending_confirmation=[],
                 reason="trusted facts available",
             )
+            await self._audit(query, decision)
+            return decision
         recalled = [
             m
             for m in await self.client.factual.recall(query, top_k=self.top_k)
@@ -59,19 +61,38 @@ class VerifyBeforeAct:
         ]
         if recalled:
             pending = [m.id for m in recalled if m.requires_confirmation]
-            return ActionDecision(
+            decision = ActionDecision(
                 kind="ask",
                 memories=recalled,
                 context=render_recalled_context(recalled, max_tokens=self.max_tokens),
                 pending_confirmation=pending,
                 reason="facts present but require confirmation",
             )
-        return ActionDecision(
+            await self._audit(query, decision)
+            return decision
+        decision = ActionDecision(
             kind="abstain",
             memories=[],
             context="",
             pending_confirmation=[],
             reason="nothing on file (relevance floor or empty store)",
+        )
+        await self._audit(query, decision)
+        return decision
+
+    async def _audit(self, query: str, decision: ActionDecision) -> None:
+        if self.client.audit is None:
+            return
+        await self.client.audit.log(
+            operation="DECIDE",
+            user_id=self.client.user_id,
+            details={
+                "query": query,
+                "kind": decision.kind,
+                "reason": decision.reason,
+                "memory_ids": [m.id for m in decision.memories],
+                "pending_confirmation": decision.pending_confirmation,
+            },
         )
 
     async def confirm_pending(self, memory_ids: list[str]) -> list[MemoryItem]:

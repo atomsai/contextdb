@@ -7,9 +7,13 @@ write into that slot is never just "another memory" — it is either
 * the **same value** again from a *new* speaker → add them to
   ``corroborated_by`` (repeats from the same speaker do not count);
 * the **same value** from the same speaker → no-op on the count;
-* a **different value** → the old memory is closed out
-  (``valid_until=now``, ``superseded_by=<new id>``) unless the incoming
-  write is a pending raw racing a newer typed fact.
+* a **different value from the same speaker** → the old memory is closed
+  out (``valid_until=now``, ``superseded_by=<new id>``) unless the
+  incoming write is a pending raw racing a newer typed fact;
+* a **different value from an independent speaker** → the slot is
+  *contested*: both values stay current and neither may gate an action
+  until ``confirm()``. Last-write-wins across speakers is how agents
+  invent facts.
 
 Writes without slot keys cannot be matched and are stored as-is; the
 deterministic slotter and explicit ``factual.add`` overrides supply the keys.
@@ -29,7 +33,7 @@ if TYPE_CHECKING:
     from contextdb.privacy.audit import AuditLogger
     from contextdb.store.sqlite_store import SQLiteStore
 
-WriteOutcome = Literal["added", "corroborated", "superseded", "ignored"]
+WriteOutcome = Literal["added", "corroborated", "superseded", "ignored", "contested"]
 
 # Heuristic action-relevance screen for writes that bypass LLM extraction
 # (add_fast, direct factual.add). False negatives here are safe — the fact
@@ -131,6 +135,9 @@ class TrustEngine:
         now = self.clock()
         if item.valid_from is None:
             item.valid_from = now
+        incoming_speaker = speaker_id(user_id, item.session_id, item.agent_id)
+        if incoming_speaker not in item.corroborated_by:
+            item.corroborated_by = [incoming_speaker, *item.corroborated_by]
 
         slot = canonicalize_slot(item.entity_key, item.attribute_key)
         if slot is not None:
@@ -203,7 +210,46 @@ class TrustEngine:
             )
             return updated, "corroborated"
 
+        same_speaker = [
+            c for c in current if incoming_speaker in (c.corroborated_by or [])
+        ]
+        other_speaker = [
+            c for c in current if incoming_speaker not in (c.corroborated_by or [])
+        ]
+
         item.write_generation = max_gen + 1
+        # Independent speakers asserting different values: contest, do not
+        # last-write-win. Same-speaker corrections still supersede.
+        if other_speaker and not same_speaker and not item.pending_consolidation:
+            item.contested = True
+            stored = await self.store.add(item)
+            for candidate in other_speaker:
+                await self.store.update(candidate.id, contested=True)
+                await self._log(
+                    "CONFLICT",
+                    candidate.id,
+                    user_id,
+                    {
+                        "contested_by": stored.id,
+                        "entity": item.entity_key,
+                        "attribute": item.attribute_key,
+                        "old_value": candidate.content,
+                        "new_value": stored.content,
+                        "speaker": incoming_speaker,
+                    },
+                )
+            await self._log(
+                "CREATE",
+                stored.id,
+                user_id,
+                {
+                    "trust": "contested",
+                    "entity": item.entity_key,
+                    "attribute": item.attribute_key,
+                },
+            )
+            return stored, "contested"
+
         stored = await self.store.add(item)
         outcome: WriteOutcome = "added"
         for candidate in current:
@@ -213,6 +259,7 @@ class TrustEngine:
                 candidate.id,
                 valid_until=now,
                 superseded_by=stored.id,
+                contested=False,
             )
             await self._log(
                 "SUPERSEDE",
@@ -261,11 +308,36 @@ class TrustEngine:
             memory_id,
             confirmed=True,
             confirmed_at=now,
+            contested=False,
             corroboration_count=len(speakers),
             corroborated_by=speakers,
             epistemic_source="user_stated",
             confidence=max(item.confidence, 0.95),
         )
+        # Resolving a contest: the confirmed value closes every other
+        # current occupant of the slot.
+        if updated.entity_key and updated.attribute_key:
+            rivals = await self.store.list_by_slot(updated.entity_key, updated.attribute_key)
+            for rival in rivals:
+                if rival.id == updated.id or not rival.is_valid_at(now):
+                    continue
+                await self.store.update(
+                    rival.id,
+                    valid_until=now,
+                    superseded_by=updated.id,
+                    contested=False,
+                )
+                await self._log(
+                    "SUPERSEDE",
+                    rival.id,
+                    user_id,
+                    {
+                        "superseded_by": updated.id,
+                        "entity": updated.entity_key,
+                        "attribute": updated.attribute_key,
+                        "reason": "confirm_resolved_contest",
+                    },
+                )
         await self._log(
             "CONFIRM",
             memory_id,

@@ -92,7 +92,11 @@ class FactualMemory:
     ) -> list[MemoryItem]:
         """Recall currently-valid facts (or those valid at ``as_of``)."""
         return await self.client.search(
-            query, top_k=top_k, memory_type=MemoryType.FACTUAL, as_of=as_of
+            query,
+            top_k=top_k,
+            memory_type=MemoryType.FACTUAL,
+            as_of=as_of,
+            compose=True,
         )
 
     async def recall_for_action(

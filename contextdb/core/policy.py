@@ -78,6 +78,8 @@ class TrustPolicy(BaseModel):
             return False
         if item.injection_suspect:
             return False
+        if item.contested and not item.confirmed:
+            return False
         if item.confirmed:
             return True
         needed = self.corroboration_needed(item.slot_class)

@@ -436,7 +436,7 @@ class ContextDB:
         # Only freshly-stored memories get graph links; a corroboration
         # reuses the existing node.
         if (
-            outcome in {"added", "superseded"}
+            outcome in {"added", "superseded", "contested"}
             and self.config.enable_auto_link
             and self._auto_linker is not None
         ):
@@ -457,18 +457,28 @@ class ContextDB:
         memory_type: MemoryType | None = None,
         time_range: tuple[datetime, datetime] | None = None,
         as_of: datetime | None = None,
+        compose: bool = False,
     ) -> list[MemoryItem]:
         """Semantic + graph recall.
 
         Defaults to *currently valid* memories only (Epic 2): a superseded
         fact is retained for audit but no longer recalled. Pass ``as_of``
         for a time-travel query — "what did we believe at moment T?".
+
+        ``compose=True`` hops to sibling slots of the same entity so
+        "when is the Denver meeting?" can surface ``meeting/time`` after
+        hitting ``meeting/location``. Mem0-style store-and-recall cannot.
         """
         await self._ensure_init()
         assert self._embedder is not None
         assert self._retrieval is not None
+        assert self._pii is not None
         moment = as_of or self.clock()
-        query_embedding = (await self._embedder.embed([query]))[0]
+        # Embed the redacted query so a lookup containing a real email
+        # still retrieves '[EMAIL]' — and so raw PII never enters the
+        # vector index on the read path either.
+        processed_query, _query_pii = self._pii.process(query)
+        query_embedding = (await self._embedder.embed([processed_query]))[0]
         # Over-fetch so validity/type filtering cannot starve top_k.
         scored = await self._retrieval.search_scored(query, query_embedding, top_k=top_k * 3)
         floor = self.trust_policy.relevance_floor
@@ -482,6 +492,8 @@ class ContextDB:
             start, end = time_range
             items = [m for m in items if m.event_time and start <= m.event_time <= end]
         items = items[:top_k]
+        if compose:
+            items = await self._compose_siblings(items, moment, extra=top_k)
         if self._audit is not None:
             score_by_id = {s.item.id: s for s in scored}
             await self._audit.log(
@@ -513,6 +525,7 @@ class ContextDB:
                             ),
                             "action_trusted": self.trust_policy.is_trusted(s.item),
                             "confirmed": s.item.confirmed,
+                            "contested": s.item.contested,
                             "independent_corroboration": s.item.independent_corroboration,
                         }
                         for mid, s in score_by_id.items()
@@ -656,7 +669,7 @@ class ContextDB:
                     new_item.epistemic_source = "agent_inferred"
                 self._screen_item(new_item)
                 saved, outcome = await self._trust.write(new_item, user_id=self.user_id)
-                if outcome in {"added", "superseded"}:
+                if outcome in {"added", "superseded", "contested"}:
                     await self._link(saved.id)
             await store.update(
                 raw.id,
@@ -771,7 +784,7 @@ class ContextDB:
                 saved = await store.add(item)
                 outcome = "added"
             if (
-                outcome in {"added", "superseded"}
+                outcome in {"added", "superseded", "contested"}
                 and self.config.enable_auto_link
                 and self._auto_linker is not None
             ):
@@ -1082,6 +1095,33 @@ class ContextDB:
             supersede_chain=chain,
             surfaced_by=surfaced_by,
         )
+
+    async def _compose_siblings(
+        self,
+        items: list[MemoryItem],
+        moment: datetime,
+        extra: int = 5,
+    ) -> list[MemoryItem]:
+        """Hop to other current slots of the same entity.
+
+        "when is the Denver meeting?" hits ``meeting/location``; the hop
+        surfaces ``meeting/time``. Cap keeps a noisy entity from dumping
+        its whole profile into the prompt.
+        """
+        store = self._require_store()
+        seen = {m.id for m in items}
+        extras: list[MemoryItem] = []
+        for item in items:
+            if not item.entity_key:
+                continue
+            for sibling in await store.list_by_entity(item.entity_key):
+                if sibling.id in seen or not sibling.is_valid_at(moment):
+                    continue
+                seen.add(sibling.id)
+                extras.append(sibling)
+                if len(extras) >= extra:
+                    return items + extras
+        return items + extras
 
     # ------------------------------------------------------------------ #
     # Typed memory surfaces

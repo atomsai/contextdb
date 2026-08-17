@@ -1235,3 +1235,96 @@ async def test_eval_verify_before_act_ask_then_confirm(db: ContextDB) -> None:
     second = await gate.decide("come in Thursday")
     assert second.kind == "act"
     assert any(m.id == wish.id for m in second.memories)
+    assert db.audit is not None
+    decisions = [e for e in await db.audit.get_history() if e.operation == "DECIDE"]
+    assert {e.details["kind"] for e in decisions} >= {"ask", "act"}
+
+
+async def test_eval_independent_speakers_contest_a_slot(tmp_path: Path) -> None:
+    """Two sessions asserting different values do not last-write-win."""
+
+    def cfg() -> ContextDBConfig:
+        return make_config(tmp_path, name="contest.db")
+
+    a = contextdb.init(user_id="caller", session_id="call-1", config=cfg())
+    first = await a.factual.add(
+        "The meeting is at 3pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    b = contextdb.init(user_id="caller", session_id="call-2", config=cfg())
+    try:
+        second = await b.factual.add(
+            "The meeting is at 4pm",
+            source="user_stated",
+            confidence=0.9,
+            action_relevant=True,
+            entity="meeting",
+            attribute="time",
+        )
+        assert second.id != first.id
+        assert second.contested is True
+        old = await a.get(first.id)
+        assert old is not None
+        assert old.contested is True
+        assert old.valid_until is None
+        assert all(
+            m.id not in {first.id, second.id}
+            for m in await b.factual.recall_for_action("when is the meeting")
+        )
+        confirmed = await b.factual.confirm(second.id)
+        assert confirmed.contested is False
+        trusted = await b.factual.recall_for_action("when is the meeting")
+        assert any(m.id == second.id for m in trusted)
+        closed = await b.get(first.id)
+        assert closed is not None
+        assert closed.valid_until is not None
+        assert closed.superseded_by == second.id
+    finally:
+        await a.close()
+        await b.close()
+
+
+async def test_eval_compose_hops_sibling_slots(db: ContextDB) -> None:
+    """'when is the Denver meeting?' surfaces meeting/time via meeting/location."""
+    await db.factual.add(
+        "The meeting is in Denver",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="location",
+    )
+    await db.factual.add(
+        "The meeting is at 4pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    hits = await db.factual.recall("when is the Denver meeting")
+    contents = [m.content for m in hits]
+    assert any("4pm" in c for c in contents), contents
+    assert any("Denver" in c for c in contents), contents
+
+
+async def test_eval_pii_query_retrieves_redacted_memory(db: ContextDB) -> None:
+    """A query containing a raw email still retrieves the '[EMAIL]' memory
+    without embedding the raw address."""
+    stored = await db.factual.add(
+        "My email is jane.doe@example.com",
+        source="user_stated",
+        confidence=0.95,
+        action_relevant=True,
+        entity="user",
+        attribute="email",
+    )
+    assert "jane.doe@example.com" not in stored.content
+    assert "[EMAIL]" in stored.content
+    hits = await db.search("please look up jane.doe@example.com")
+    assert any("[EMAIL]" in h.content for h in hits), [h.content for h in hits]
+    assert all("jane.doe@example.com" not in h.content for h in hits)

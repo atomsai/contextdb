@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS memories (
     tenant_id TEXT,
     agent_id TEXT,
     session_id TEXT,
-    pii_shadow TEXT
+    pii_shadow TEXT,
+    contested INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id);
@@ -123,6 +124,7 @@ _TRUST_COLUMNS: list[tuple[str, str]] = [
     ("agent_id", "TEXT"),
     ("session_id", "TEXT"),
     ("pii_shadow", "TEXT"),
+    ("contested", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -202,6 +204,7 @@ def _row_to_item(row: Mapping[str, Any]) -> MemoryItem:
         agent_id=row.get("agent_id"),
         session_id=row.get("session_id"),
         pii_shadow=row.get("pii_shadow"),
+        contested=bool(row.get("contested") or 0),
     )
 
 
@@ -359,11 +362,11 @@ class SQLiteStore(BaseStore):
                     superseded_by, pending_consolidation, injection_suspect,
                     corroborated_by, confirmed, confirmed_at, write_generation,
                     slot_class, slot_value, negated, tenant_id, agent_id,
-                    session_id, pii_shadow
+                    session_id, pii_shadow, contested
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?
+                    ?,?
                 )
                 """,
                 (
@@ -408,6 +411,7 @@ class SQLiteStore(BaseStore):
                     item.agent_id or self._agent_id,
                     item.session_id,
                     item.pii_shadow,
+                    int(item.contested),
                 ),
             )
             await conn.commit()
@@ -472,6 +476,7 @@ class SQLiteStore(BaseStore):
             "agent_id",
             "session_id",
             "pii_shadow",
+            "contested",
         }
         unknown = set(kwargs) - allowed
         if unknown:
@@ -512,6 +517,7 @@ class SQLiteStore(BaseStore):
                 "injection_suspect",
                 "confirmed",
                 "negated",
+                "contested",
             }:
                 sets.append(f"{k} = ?")
                 params.append(int(bool(v)))
@@ -673,6 +679,29 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         clauses = ["entity_key = ?", "attribute_key = ?"]
         params: list[Any] = [entity_key, attribute_key]
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.value)
+        scope_sql, scope_params = self._scope_sql(None)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
+        cursor = await conn.execute(
+            f"SELECT * FROM memories WHERE {' AND '.join(clauses)}",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_item(dict(row)) for row in rows]
+
+    async def list_by_entity(
+        self,
+        entity_key: str,
+        status: MemoryStatus | None = MemoryStatus.ACTIVE,
+    ) -> list[MemoryItem]:
+        """Current-family slots for one entity — the compositional hop."""
+        conn = self._require_conn()
+        clauses = ["entity_key = ?"]
+        params: list[Any] = [entity_key]
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
