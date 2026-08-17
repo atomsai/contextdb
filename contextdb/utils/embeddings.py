@@ -36,20 +36,32 @@ class EmbeddingProvider(ABC):
 
 
 class OpenAIEmbedding(EmbeddingProvider):
-    """OpenAI embedding API wrapper with exponential-backoff retry."""
+    """OpenAI embedding API wrapper with exponential-backoff retry.
+
+    Also covers any OpenAI-compatible embeddings endpoint when ``base_url``
+    is supplied. For unknown models the declared dimension falls back to
+    ``dim_override`` (typically ``ContextDBConfig.embedding_dim``) so the
+    store schema matches what the endpoint actually returns.
+    """
 
     def __init__(
         self,
         model: str = "text-embedding-3-small",
         api_key: str | None = None,
         max_retries: int = 3,
+        base_url: str | None = None,
+        dim_override: int | None = None,
     ) -> None:
         from openai import AsyncOpenAI
 
         self.model = model
         self.max_retries = max_retries
-        self._client = AsyncOpenAI(api_key=api_key)
-        self._dim = _OPENAI_DIMS.get(model, 1536)
+        self.base_url = base_url
+        self._client = AsyncOpenAI(
+            api_key=api_key or "contextdb-keyless-local",
+            base_url=base_url,
+        )
+        self._dim = _OPENAI_DIMS.get(model) or dim_override or 1536
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -140,16 +152,26 @@ class MockEmbedding(EmbeddingProvider):
 def get_embedding_provider(
     model: str,
     api_key: str | None = None,
+    base_url: str | None = None,
     **kwargs: Any,
 ) -> EmbeddingProvider:
     """Pick an embedding provider from a short model string.
 
-    ``mock``/``test`` → :class:`MockEmbedding`; ``text-embedding-*`` or
-    ``openai:*`` → :class:`OpenAIEmbedding`; anything else is routed to
-    :class:`SentenceTransformerEmbedding`.
+    ``mock``/``test`` → :class:`MockEmbedding`. When ``base_url`` is set,
+    any model name is sent to that OpenAI-compatible endpoint. Otherwise
+    ``text-embedding-*`` or ``openai:*`` → :class:`OpenAIEmbedding`;
+    anything else is routed to :class:`SentenceTransformerEmbedding`.
     """
     if model in {"mock", "test"}:
         return MockEmbedding(dimension=kwargs.get("dimension", 384))
+    if base_url is not None:
+        resolved = model.replace("openai:", "", 1) if model.startswith("openai:") else model
+        return OpenAIEmbedding(
+            model=resolved,
+            api_key=api_key,
+            base_url=base_url,
+            dim_override=kwargs.get("dimension"),
+        )
     if model.startswith("text-embedding-") or model.startswith("openai:"):
         resolved = model.replace("openai:", "", 1) if model.startswith("openai:") else model
         return OpenAIEmbedding(model=resolved, api_key=api_key)

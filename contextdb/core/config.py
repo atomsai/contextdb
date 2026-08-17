@@ -52,6 +52,21 @@ class ContextDBConfig(BaseSettings):
         default=None,
         description="API key for the LLM provider. Falls back to OPENAI_API_KEY env var.",
     )
+    llm_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL of an OpenAI-compatible chat endpoint (Groq, Ollama, "
+            "vLLM, Together, ...). When set, ANY model name is accepted and "
+            "the API key may be omitted for keyless local servers."
+        ),
+    )
+    embedding_base_url: str | None = Field(
+        default=None,
+        description=(
+            "Base URL of an OpenAI-compatible embeddings endpoint. When set, "
+            "any embedding model name is routed there instead of OpenAI."
+        ),
+    )
     pii_action: PIIAction = Field(
         default="redact",
         description="How detected PII should be handled before storage.",

@@ -14,6 +14,8 @@ The client is lazy: resources are created on the first await, which keeps
 
 from __future__ import annotations
 
+import logging
+import warnings
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -23,7 +25,9 @@ from contextdb.core.models import MemoryItem, MemoryType
 from contextdb.privacy.pii_detector import PIIDetector
 from contextdb.store.sqlite_store import SQLiteStore
 from contextdb.utils.embeddings import EmbeddingProvider, get_embedding_provider
-from contextdb.utils.llm import LLMProvider, get_llm_provider
+from contextdb.utils.llm import LazyLLM, LLMProvider
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from contextdb.agents.memory_bus import MemoryBus
@@ -60,6 +64,32 @@ class ContextDB:
         self._memory_bus: MemoryBus | None = None
         self._rl_manager: RLMemoryManager | None = None
         self._initialized = False
+        self._warn_if_llm_unusable()
+
+    def _warn_if_llm_unusable(self) -> None:
+        """Warn loudly at init when extraction cannot possibly work.
+
+        The historical failure mode was silent: no key meant every
+        extraction call failed downstream and the pipeline degraded to
+        storing raw text. We cannot fix remote misconfiguration, but we can
+        make sure the operator hears about it before the first write.
+        """
+        model = self.config.llm_model
+        if model in {"mock", "test"}:
+            return
+        if self.config.llm_base_url is not None:
+            return
+        if self.config.llm_api_key:
+            return
+        message = (
+            f"ContextDB: no API key configured for LLM model '{model}'. "
+            "Extraction, compression, and consolidation will raise ConfigError "
+            "on first use instead of silently degrading. Set "
+            "CONTEXTDB_LLM_API_KEY / OPENAI_API_KEY, or pass llm_base_url to "
+            "use an OpenAI-compatible endpoint (Groq, Ollama, vLLM, Together)."
+        )
+        _logger.warning(message)
+        warnings.warn(message, UserWarning, stacklevel=3)
 
     # ------------------------------------------------------------------ #
     # Initialization
@@ -73,6 +103,7 @@ class ContextDB:
             self.config.embedding_model,
             self.config.llm_api_key,
             dimension=self.config.embedding_dim,
+            base_url=self.config.embedding_base_url,
         )
         dim = self._embedder.dimension()
         self._store = SQLiteStore(
@@ -81,7 +112,14 @@ class ContextDB:
             embedding_dim=dim,
         )
         await self._store.initialize()
-        self._llm = get_llm_provider(self.config.llm_model, self.config.llm_api_key)
+        if self._llm is None:
+            # Lazy: realtime writes (add_fast) must not require — or touch —
+            # an LLM. The provider is constructed on first actual use.
+            self._llm = LazyLLM(
+                self.config.llm_model,
+                self.config.llm_api_key,
+                base_url=self.config.llm_base_url,
+            )
         self._pii = PIIDetector(
             action=self.config.pii_action,
             encryption_key=self.config.pii_encryption_key,
