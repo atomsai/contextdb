@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pycontextdb"
-version = "0.1.1"
+version = "0.2.0"
 description = "The unified context layer for AI agents — memory you can act on without treating wishes as facts"
 readme = "README.md"
 license = "Apache-2.0"
@@ -99,6 +99,15 @@ warn_unused_configs = true
 [[tool.mypy.overrides]]
 module = ["faiss", "sentence_transformers", "mcp", "mcp.*"]
 ignore_missing_imports = true
+
+# NumPy 2.5+ stubs use PEP 695 `type` aliases. mypy with
+# python_version = "3.10" (our runtime floor) cannot parse those
+# stubs, which reds the 3.12 CI job: 3.12 resolves NumPy 2.5 while
+# 3.10/3.11 stay on 2.4 and stay green. Skip the stubs; our tests
+# still exercise the runtime on every matrix version.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

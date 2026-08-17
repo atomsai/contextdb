@@ -11,7 +11,7 @@ fact so an agent can act without treating a wish as a booking**.
 
 ## Status
 
-v0.1.1 — 122 tests passing (34 trust-model acceptance evals), type-checked
+v0.2.0 — 122 tests passing (34 trust-model acceptance evals), type-checked
 under `mypy --strict`, ruff clean. Search p95 under 5ms at 5K memories.
 Fabrication bake-off: trust arm **0%** fabrication / **100%** recall vs
 raw-store baseline 50% / 88%.

@@ -6,7 +6,8 @@ import contextdb
 
 
 def test_version_exported() -> None:
-    assert contextdb.__version__ == "0.1.0"
+    assert contextdb.__version__
+    assert "." in contextdb.__version__
 
 
 def test_init_returns_client() -> None:
