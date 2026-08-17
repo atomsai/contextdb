@@ -18,7 +18,7 @@ import threading
 import time
 import warnings
 from collections.abc import AsyncIterator, Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,7 @@ import pytest_asyncio
 import contextdb
 from contextdb import ContextDB, ContextDBConfig
 from contextdb.core.exceptions import ConfigError
+from contextdb.core.models import MemoryType
 from contextdb.utils.llm import MockLLM
 
 # ---------------------------------------------------------------------------
@@ -537,5 +538,48 @@ async def test_eval_3_2_fast_write_recallable_before_consolidation(
         after = await db._store.get_raw(item.id)
         assert after is not None
         assert after.pending_consolidation is False
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Epic 4 — Salience: recency x frequency x criticality
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_4_1_critical_constraint_survives_recency_flood(
+    tmp_path: Path,
+) -> None:
+    """EVAL-4.1: 500 fresh noise memories + one year-old critical constraint;
+    the constraint ranks top-1 for a topical query."""
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(tmp_path, enable_auto_link=False),
+    )
+    try:
+        year_ago = datetime.now(tz=timezone.utc) - timedelta(days=365)
+        critical = await db.add(
+            "User has a severe peanut allergy (anaphylaxis); never serve peanuts.",
+            memory_type=MemoryType.FACTUAL,
+            event_time=year_ago,
+            epistemic_source="user_stated",
+            confidence=0.98,
+            action_relevant=True,
+            entity_key="user",
+            attribute_key="peanut_allergy",
+        )
+        for i in range(500):
+            # Noise shares no content words with the query, is all fresh,
+            # and avoids action-relevant/critical keywords.
+            await db.add(
+                f"Routine log entry {i}: station {i} completed its nightly sweep.",
+                memory_type=MemoryType.FACTUAL,
+            )
+
+        recalled = await db.factual.recall("Does the user have a peanut allergy?")
+        assert recalled, "no recall at all"
+        assert recalled[0].id == critical.id, (
+            f"critical constraint drowned: top hit was {recalled[0].content!r}"
+        )
     finally:
         await db.close()

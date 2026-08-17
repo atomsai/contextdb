@@ -34,8 +34,12 @@ WriteOutcome = Literal["added", "corroborated", "superseded"]
 # is still stored and recallable; it just doesn't gate actions until
 # consolidation re-types it. False positives are also safe — the fact merely
 # carries requires_confirmation until corroborated.
+# NOTE on regex shape: stem alternatives (book, allerg, prescri, ...) use
+# prefix matching — a trailing \b after the group would never fire for
+# "allergy"/"booking" because the following character is a word character.
+# Alternatives that MUST terminate (pin, am/pm times) carry their own \b.
 _ACTION_RELEVANT = re.compile(
-    r"\b(book|booking|booked|appointment|reservation|reserve|schedule|meeting|"
+    r"\b(?:book|appointment|reservation|reserve|schedule|meeting|"
     r"come in|stop by|"
     r"price|pricing|cost|fee|invoice|payment|pay|salary|account number|routing|"
     r"password|passcode|pin\b|"
@@ -44,17 +48,17 @@ _ACTION_RELEVANT = re.compile(
     r"legal|lawsuit|contract|court|lawyer|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"tomorrow|tonight|"
-    r"\d{1,2}\s?(?::\d{2})?\s?(?:am|pm))\b",
+    r"\d{1,2}\s?(?::\d{2})?\s?(?:am|pm)\b)",
     re.IGNORECASE,
 )
 
 # Content classes that outrank ordinary facts for salience criticality
 # (Epic 4): health/safety and legal constraints beat preferences beat trivia.
 _CRITICAL_CLASS = re.compile(
-    r"\b(allerg|anaphylax|medication|medicine|diagnos|prescri|insulin|"
+    r"\b(?:allerg|anaphylax|medication|medicine|diagnos|prescri|insulin|"
     r"do not resuscitate|dnr\b|"
     r"legal|lawsuit|court|restraining order|compliance|"
-    r"ssn|social security|credit card|routing number)\b",
+    r"ssn|social security|credit card|routing number)",
     re.IGNORECASE,
 )
 

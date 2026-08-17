@@ -83,6 +83,17 @@ class ContextDBConfig(BaseSettings):
         default=730,
         description="Default retention horizon in days. None disables TTL enforcement.",
     )
+    enable_salience: bool = Field(
+        default=True,
+        description=(
+            "Multiply fused retrieval scores by salience (recency x "
+            "recurrence x criticality). Disable to A/B against pure RRF."
+        ),
+    )
+    salience_half_life_days: float = Field(
+        default=90.0,
+        description="Half-life of the recency decay term in salience scoring.",
+    )
     log_level: str = Field(
         default="INFO",
         description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",

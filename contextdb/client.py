@@ -171,7 +171,12 @@ class ContextDB:
 
         self._auto_linker = AutoLinker(self._graphs)
         self._retrieval = RetrievalEngine(
-            self._store, self._graphs, QueryClassifier(), RetrievalFuser()
+            self._store,
+            self._graphs,
+            QueryClassifier(),
+            RetrievalFuser(),
+            enable_salience=self.config.enable_salience,
+            salience_half_life_days=self.config.salience_half_life_days,
         )
         self._formation = FormationPipeline(
             Segmenter(),

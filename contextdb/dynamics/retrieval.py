@@ -15,9 +15,18 @@ heuristics below get ~80% of the signal for zero cost.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from contextdb.core.models import MemoryItem
+from contextdb.dynamics.salience import (
+    DEFAULT_HALF_LIFE_DAYS,
+    age_in_days,
+    criticality_boost,
+    recurrence,
+    salience,
+)
 
 if TYPE_CHECKING:
     from contextdb.graphs.base import BaseGraph
@@ -78,6 +87,26 @@ class RetrievalFuser:
         return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
 
 
+@dataclass
+class ScoredMemory:
+    """A retrieved memory with the full score decomposition (Epic 4/6).
+
+    ``final_score`` = ``rrf_score`` x ``salience`` when salience is enabled.
+    The components are what recall-side observability logs and
+    ``db.explain`` surfaces — "why did the agent say that?" must be
+    answerable from these numbers alone.
+    """
+
+    item: MemoryItem
+    final_score: float
+    rrf_score: float
+    salience: float
+    age_days: float
+    recurrence: float
+    criticality_boost: float
+    per_graph: dict[str, int] = field(default_factory=dict)
+
+
 class RetrievalEngine:
     """Coordinate vector + graph retrieval and return ranked memories."""
 
@@ -87,11 +116,15 @@ class RetrievalEngine:
         graphs: dict[str, BaseGraph],
         classifier: QueryClassifier,
         fuser: RetrievalFuser,
+        enable_salience: bool = True,
+        salience_half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
     ) -> None:
         self.store = store
         self.graphs = graphs
         self.classifier = classifier
         self.fuser = fuser
+        self.enable_salience = enable_salience
+        self.salience_half_life_days = salience_half_life_days
 
     async def search(
         self,
@@ -99,6 +132,15 @@ class RetrievalEngine:
         query_embedding: list[float],
         top_k: int = 10,
     ) -> list[MemoryItem]:
+        return [s.item for s in await self.search_scored(query, query_embedding, top_k=top_k)]
+
+    async def search_scored(
+        self,
+        query: str,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[ScoredMemory]:
+        """RRF-fuse per-graph rankings, then multiply by salience (Epic 4)."""
         weights = self.classifier.classify(query)
         seed_items = await self.store.search_by_embedding(query_embedding, top_k=top_k * 2)
         semantic_ranking = [(item.id, 1.0 / (rank + 1)) for rank, item in enumerate(seed_items)]
@@ -118,13 +160,57 @@ class RetrievalEngine:
             rankings[name] = sorted(expanded.items(), key=lambda kv: kv[1], reverse=True)
 
         fused = self.fuser.fuse(rankings, weights)
-        ordered_ids = [mid for mid, _ in fused[:top_k]]
-        if not ordered_ids:
-            return seed_items[:top_k]
+        now = datetime.now(tz=timezone.utc)
 
-        items: list[MemoryItem] = []
-        for mid in ordered_ids:
+        # Per-graph rank lookup for observability.
+        per_graph_ranks: dict[str, dict[str, int]] = {
+            name: {mid: rank for rank, (mid, _) in enumerate(ranking, start=1)}
+            for name, ranking in rankings.items()
+        }
+
+        if not fused:
+            # No fusion signal (empty store or zero weights): rank the seeds
+            # directly, still applying salience.
+            return [
+                self._score(item, 1.0 / (rank + 1), per_graph_ranks, now)
+                for rank, item in enumerate(seed_items[:top_k])
+            ]
+
+        scored: list[ScoredMemory] = []
+        for mid, rrf_score in fused:
             item = await self.store.get_raw(mid)
-            if item is not None:
-                items.append(item)
-        return items
+            if item is None:
+                continue
+            scored.append(self._score(item, rrf_score, per_graph_ranks, now))
+        scored.sort(key=lambda s: s.final_score, reverse=True)
+        return scored[:top_k]
+
+    def _score(
+        self,
+        item: MemoryItem,
+        rrf_score: float,
+        per_graph_ranks: dict[str, dict[str, int]],
+        now: datetime,
+    ) -> ScoredMemory:
+        boost = criticality_boost(item)
+        rec = recurrence(item)
+        age = age_in_days(item, now)
+        sal = (
+            salience(item, now, self.salience_half_life_days)
+            if self.enable_salience
+            else 1.0
+        )
+        return ScoredMemory(
+            item=item,
+            final_score=rrf_score * sal,
+            rrf_score=rrf_score,
+            salience=sal,
+            age_days=age,
+            recurrence=rec,
+            criticality_boost=boost,
+            per_graph={
+                name: ranks[item.id]
+                for name, ranks in per_graph_ranks.items()
+                if item.id in ranks
+            },
+        )
