@@ -21,9 +21,24 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 GraphType = Literal["semantic", "temporal", "causal", "entity"]
+
+# Epistemic provenance of a stored claim:
+# * ``user_stated`` — the user asserted it themselves.
+# * ``agent_inferred`` — the agent derived it; never first-party evidence.
+# * ``third_party`` — hearsay, forwarded claims, or content of uncertain origin.
+EpistemicSource = Literal["user_stated", "agent_inferred", "third_party"]
+
+# A user-stated fact is trusted for action only at or above this confidence.
+# Below it, action-gating facts require corroboration (count >= 2). Wishes and
+# speculation are extracted at 0.5, which is exactly what keeps an
+# uncorroborated "I'd like to come in Thursday" out of recall_for_action().
+ACTION_CONFIDENCE_THRESHOLD = 0.7
+
+# Corroboration count at which any fact — regardless of source — is trusted.
+ACTION_CORROBORATION_THRESHOLD = 2
 
 
 def _utcnow() -> datetime:
@@ -149,3 +164,88 @@ class MemoryItem(BaseModel):
 
     entity_mentions: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+
+    # ------------------------------------------------------------------ #
+    # Trust model (Epics 1-3). All fields have backward-compatible
+    # defaults; the storage layer migrates old rows with these defaults.
+    # ------------------------------------------------------------------ #
+
+    epistemic_source: EpistemicSource = Field(
+        default="user_stated",
+        description=(
+            "Who vouches for this claim. Distinct from ``source``, which "
+            "remains the free-form provenance string (e.g. 'consolidator')."
+        ),
+    )
+    corroboration_count: int = Field(
+        default=1,
+        ge=0,
+        description="Independent writes of the same entity+attribute value.",
+    )
+    action_relevant: bool = Field(
+        default=False,
+        description=(
+            "True for facts that gate actions: bookings, prices, schedules, "
+            "contact details, identity, health/finance/legal attributes."
+        ),
+    )
+    entity_key: str | None = Field(
+        default=None,
+        description="Stable slot key (entity) for dedupe/contradiction matching.",
+    )
+    attribute_key: str | None = Field(
+        default=None,
+        description="Stable slot key (attribute) for dedupe/contradiction matching.",
+    )
+    valid_from: datetime | None = Field(
+        default=None,
+        description="Start of validity (system-time). None means 'always was'.",
+    )
+    valid_until: datetime | None = Field(
+        default=None,
+        description="End of validity. Set when superseded; None means current.",
+    )
+    superseded_by: str | None = Field(
+        default=None,
+        description="ID of the memory that replaced this one, if any.",
+    )
+    pending_consolidation: bool = Field(
+        default=False,
+        description="Written via add_fast; extraction/dedupe still outstanding.",
+    )
+    injection_suspect: bool = Field(
+        default=False,
+        description="Write-time screening flagged instruction-shaped content.",
+    )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def requires_confirmation(self) -> bool:
+        """Whether an agent must confirm with the user before acting on this.
+
+        Only action-gating facts can require confirmation. A fact is trusted
+        outright when it is corroborated (count >= 2) or first-party
+        (``user_stated``) at or above :data:`ACTION_CONFIDENCE_THRESHOLD`.
+        Wishes are extracted at confidence 0.5, so an uncorroborated wish
+        always requires confirmation — that is the fabrication fix.
+        """
+        if not self.action_relevant:
+            return False
+        if self.corroboration_count >= ACTION_CORROBORATION_THRESHOLD:
+            return False
+        return not (
+            self.epistemic_source == "user_stated"
+            and self.confidence >= ACTION_CONFIDENCE_THRESHOLD
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def action_trusted(self) -> bool:
+        """Whether this fact may gate an action without confirmation."""
+        return self.action_relevant and not self.requires_confirmation
+
+    def is_valid_at(self, moment: datetime) -> bool:
+        """Temporal validity check (Epic 2). ``valid_until`` is exclusive."""
+        if self.valid_from is not None and moment < self.valid_from:
+            return False
+        return not (self.valid_until is not None and moment >= self.valid_until)

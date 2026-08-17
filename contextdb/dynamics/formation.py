@@ -19,6 +19,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from contextdb.core.models import MemoryItem, MemoryType
+from contextdb.dynamics.trust import infer_action_relevant
 
 if TYPE_CHECKING:
     from contextdb.privacy.pii_detector import PIIDetector
@@ -30,12 +31,29 @@ _EXTRACT_PROMPT = """Extract atomic facts and named entities from the text.
 Return strict JSON.
 
 Schema:
-{"facts": [{"content": "string", "type": "FACTUAL|EXPERIENTIAL", "entities": ["string"]}]}
+{"facts": [{"content": "string", "type": "FACTUAL|EXPERIENTIAL",
+  "entities": ["string"],
+  "source": "user_stated|agent_inferred|third_party",
+  "confidence": 0.0-1.0,
+  "action_relevant": true|false,
+  "entity": "string|null", "attribute": "string|null"}]}
 
 Rules:
 - Each fact must be self-contained (understandable without context).
 - Skip small talk; keep substantive information only.
 - Aim for 1-5 facts per turn.
+- source: "user_stated" when the speaker asserts it about themselves;
+  "third_party" for hearsay ("my colleague said...") or content of
+  uncertain origin; "agent_inferred" for conclusions you draw rather than
+  statements made.
+- Wishes, hypotheticals, and plans are NOT facts: "I'd like to come in
+  Thursday" is a desire, not a booking. Extract them with confidence <= 0.5
+  so they cannot be acted on without confirmation.
+- action_relevant=true for anything that gates an action: bookings, prices,
+  schedules, contact details, identity, health/finance/legal attributes.
+- entity/attribute name the stable slot the fact fills (e.g. entity
+  "meeting", attribute "time") so repeats and corrections match. Use
+  snake_case; null when no clear slot exists.
 
 Text: "{text}"
 """
@@ -102,8 +120,11 @@ class Segmenter:
         return merged
 
 
+_EPISTEMIC_SOURCES = {"user_stated", "agent_inferred", "third_party"}
+
+
 class MemoryExtractor:
-    """LLM-driven fact + entity extraction per turn."""
+    """LLM-driven fact + entity extraction per turn, with epistemic typing."""
 
     def __init__(self, llm: LLMProvider) -> None:
         self.llm = llm
@@ -120,7 +141,35 @@ class MemoryExtractor:
             if mem_type not in {"FACTUAL", "EXPERIENTIAL", "WORKING"}:
                 mem_type = "FACTUAL"
             entities = [str(e).strip() for e in raw.get("entities", []) or [] if e]
-            out.append({"content": content, "memory_type": mem_type, "entities": entities})
+
+            source = str(raw.get("source", "user_stated")).lower()
+            if source not in _EPISTEMIC_SOURCES:
+                source = "user_stated"
+            try:
+                confidence = float(raw.get("confidence", 0.8))
+            except (TypeError, ValueError):
+                confidence = 0.8
+            confidence = min(1.0, max(0.0, confidence))
+            action_relevant_raw = raw.get("action_relevant")
+            action_relevant = (
+                bool(action_relevant_raw)
+                if action_relevant_raw is not None
+                else infer_action_relevant(content)
+            )
+            entity = raw.get("entity")
+            attribute = raw.get("attribute")
+            out.append(
+                {
+                    "content": content,
+                    "memory_type": mem_type,
+                    "entities": entities,
+                    "epistemic_source": source,
+                    "confidence": confidence,
+                    "action_relevant": action_relevant,
+                    "entity_key": str(entity).strip() if entity else None,
+                    "attribute_key": str(attribute).strip() if attribute else None,
+                }
+            )
         return out
 
 
@@ -175,11 +224,16 @@ class FormationPipeline:
             all_facts.extend(facts)
 
         items: list[MemoryItem] = []
-        contents = [fact["content"] for fact in all_facts]
+        # PII-before-embedder: redact first, embed only the processed text.
+        processed_facts: list[tuple[dict[str, Any], str, list[Any]]] = []
+        for fact in all_facts:
+            processed, pii_annotations = self.pii.process(fact["content"])
+            processed_facts.append((fact, processed, pii_annotations))
+        contents = [processed for _, processed, _ in processed_facts]
         embeddings = await self.embedder.embed(contents) if contents else []
-        for fact, embedding in zip(all_facts, embeddings, strict=False):
-            content = fact["content"]
-            processed, pii_annotations = self.pii.process(content)
+        for (fact, processed, pii_annotations), embedding in zip(
+            processed_facts, embeddings, strict=False
+        ):
             items.append(
                 MemoryItem(
                     content=processed,
@@ -188,6 +242,13 @@ class FormationPipeline:
                     source=source,
                     pii_annotations=pii_annotations,
                     entity_mentions=list(fact.get("entities", [])),
+                    epistemic_source=fact.get("epistemic_source", "user_stated"),
+                    confidence=float(fact.get("confidence", 0.8)),
+                    action_relevant=bool(
+                        fact.get("action_relevant", infer_action_relevant(processed))
+                    ),
+                    entity_key=fact.get("entity_key"),
+                    attribute_key=fact.get("attribute_key"),
                 )
             )
         return items

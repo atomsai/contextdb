@@ -21,7 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 from contextdb.core.config import ContextDBConfig
 from contextdb.core.exceptions import ContextDBError
-from contextdb.core.models import MemoryItem, MemoryType
+from contextdb.core.models import EpistemicSource, MemoryItem, MemoryType
+from contextdb.dynamics.trust import TrustEngine, infer_action_relevant
 from contextdb.privacy.pii_detector import PIIDetector
 from contextdb.store.sqlite_store import SQLiteStore
 from contextdb.utils.embeddings import EmbeddingProvider, get_embedding_provider
@@ -63,6 +64,7 @@ class ContextDB:
         self._retention: RetentionManager | None = None
         self._memory_bus: MemoryBus | None = None
         self._rl_manager: RLMemoryManager | None = None
+        self._trust: TrustEngine | None = None
         self._initialized = False
         self._warn_if_llm_unusable()
 
@@ -189,6 +191,9 @@ class ContextDB:
             self._audit = AuditLogger(self._store)
             await self._audit.initialize()
 
+        # Trust write path (Epics 1-2): slot dedupe, corroboration, supersede.
+        self._trust = TrustEngine(self._store, self._audit)
+
         from contextdb.core.models import RetentionPolicy
         from contextdb.privacy.retention import RetentionManager
 
@@ -233,10 +238,25 @@ class ContextDB:
         event_time: datetime | None = None,
         source: str = "",
         entity_mentions: list[str] | None = None,
+        *,
+        epistemic_source: EpistemicSource | None = None,
+        confidence: float | None = None,
+        action_relevant: bool | None = None,
+        entity_key: str | None = None,
+        attribute_key: str | None = None,
     ) -> MemoryItem:
+        """Store a memory.
+
+        The keyword-only trust parameters are additive (Epic 1). When both
+        ``entity_key`` and ``attribute_key`` are supplied, the write routes
+        through the trust engine: a same-value write into the occupied slot
+        corroborates the existing memory instead of duplicating it, and a
+        different-value write supersedes it (Epic 2).
+        """
         await self._ensure_init()
         assert self._pii is not None
         assert self._embedder is not None
+        assert self._trust is not None
         store = self._require_store()
 
         processed, pii_annotations = self._pii.process(content)
@@ -265,10 +285,38 @@ class ContextDB:
             event_time=event_time or datetime.now(tz=timezone.utc),
             pii_annotations=pii_annotations,
             entity_mentions=entity_mentions or [],
+            epistemic_source=epistemic_source or "user_stated",
+            confidence=confidence if confidence is not None else 1.0,
+            action_relevant=(
+                action_relevant
+                if action_relevant is not None
+                else infer_action_relevant(processed)
+            ),
+            entity_key=entity_key,
+            attribute_key=attribute_key,
+            valid_from=datetime.now(tz=timezone.utc),
         )
-        stored = await store.add(item)
 
-        if self.config.enable_auto_link and self._auto_linker is not None:
+        if entity_key and attribute_key:
+            stored, outcome = await self._trust.write(item, user_id=self.user_id)
+        else:
+            stored = await store.add(item)
+            outcome = "added"
+            if self._audit is not None:
+                await self._audit.log(
+                    operation="CREATE",
+                    memory_id=stored.id,
+                    user_id=self.user_id,
+                    details={"memory_type": memory_type.value},
+                )
+
+        # Only freshly-stored memories get graph links; a corroboration
+        # reuses the existing node.
+        if (
+            outcome in {"added", "superseded"}
+            and self.config.enable_auto_link
+            and self._auto_linker is not None
+        ):
             await self._auto_linker.link(
                 stored.id,
                 {
@@ -276,14 +324,6 @@ class ContextDB:
                     "embedding": stored.embedding,
                     "event_time": stored.event_time,
                 },
-            )
-
-        if self._audit is not None:
-            await self._audit.log(
-                operation="CREATE",
-                memory_id=stored.id,
-                user_id=self.user_id,
-                details={"memory_type": memory_type.value},
             )
         return stored
 
@@ -293,22 +333,38 @@ class ContextDB:
         top_k: int = 10,
         memory_type: MemoryType | None = None,
         time_range: tuple[datetime, datetime] | None = None,
+        as_of: datetime | None = None,
     ) -> list[MemoryItem]:
+        """Semantic + graph recall.
+
+        Defaults to *currently valid* memories only (Epic 2): a superseded
+        fact is retained for audit but no longer recalled. Pass ``as_of``
+        for a time-travel query — "what did we believe at moment T?".
+        """
         await self._ensure_init()
         assert self._embedder is not None
         assert self._retrieval is not None
+        moment = as_of or datetime.now(tz=timezone.utc)
         query_embedding = (await self._embedder.embed([query]))[0]
-        items = await self._retrieval.search(query, query_embedding, top_k=top_k)
+        # Over-fetch so validity/type filtering cannot starve top_k.
+        items = await self._retrieval.search(query, query_embedding, top_k=top_k * 3)
+        items = [m for m in items if m.is_valid_at(moment)]
         if memory_type is not None:
             items = [m for m in items if m.memory_type == memory_type]
         if time_range is not None:
             start, end = time_range
             items = [m for m in items if m.event_time and start <= m.event_time <= end]
+        items = items[:top_k]
         if self._audit is not None:
             await self._audit.log(
                 operation="SEARCH",
                 user_id=self.user_id,
-                details={"query": query, "hits": len(items)},
+                details={
+                    "query": query,
+                    "hits": len(items),
+                    "returned_ids": [m.id for m in items],
+                    "as_of": moment.isoformat(),
+                },
             )
         return items
 
@@ -355,15 +411,29 @@ class ContextDB:
             )
 
     async def add_conversation(self, conversation: str, source: str = "") -> list[MemoryItem]:
-        """Run a raw conversation through the formation pipeline and store results."""
+        """Run a raw conversation through the formation pipeline and store results.
+
+        Extracted facts carrying entity+attribute slot keys go through the
+        trust engine, so repeats corroborate and corrections supersede
+        instead of piling up as parallel "truths".
+        """
         await self._ensure_init()
         assert self._formation is not None
+        assert self._trust is not None
         items = await self._formation.process(conversation, source=source)
         stored: list[MemoryItem] = []
         store = self._require_store()
         for item in items:
-            saved = await store.add(item)
-            if self.config.enable_auto_link and self._auto_linker is not None:
+            if item.entity_key and item.attribute_key:
+                saved, outcome = await self._trust.write(item, user_id=self.user_id)
+            else:
+                saved = await store.add(item)
+                outcome = "added"
+            if (
+                outcome in {"added", "superseded"}
+                and self.config.enable_auto_link
+                and self._auto_linker is not None
+            ):
                 await self._auto_linker.link(
                     saved.id,
                     {

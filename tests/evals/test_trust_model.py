@@ -16,6 +16,7 @@ import json
 import threading
 import warnings
 from collections.abc import AsyncIterator, Iterator
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ import pytest_asyncio
 import contextdb
 from contextdb import ContextDB, ContextDBConfig
 from contextdb.core.exceptions import ConfigError
+from contextdb.utils.llm import MockLLM
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -234,3 +236,227 @@ def test_eval_0_2b_base_url_without_key_does_not_warn(tmp_path: Path, monkeypatc
             ),
         )
     assert isinstance(db, ContextDB)
+
+
+# ---------------------------------------------------------------------------
+# Epic 1 — Epistemic typing + verify-before-act
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_1_1_wish_requires_confirmation_and_is_not_actionable(
+    db: ContextDB,
+) -> None:
+    """EVAL-1.1: a stored wish is recalled with action_relevant=True,
+    requires_confirmation=True, and never appears in recall_for_action()
+    uncorroborated."""
+    wish = await db.factual.add(
+        "I'd like to come in Thursday",
+        source="user_stated",
+        confidence=0.5,  # a stated desire, not an asserted fact
+        action_relevant=True,
+        entity="caller",
+        attribute="preferred_visit_day",
+    )
+    assert wish.action_relevant is True
+    assert wish.requires_confirmation is True
+    assert wish.action_trusted is False
+
+    recalled = await db.factual.recall("come in Thursday")
+    hit = next(m for m in recalled if m.id == wish.id)
+    assert hit.action_relevant is True
+    assert hit.requires_confirmation is True
+
+    trusted = await db.factual.recall_for_action("come in Thursday")
+    assert all(m.id != wish.id for m in trusted)
+
+    # Corroboration is what graduates a wish into an actionable fact.
+    again = await db.factual.add(
+        "I'd like to come in Thursday",
+        source="user_stated",
+        confidence=0.5,
+        action_relevant=True,
+        entity="caller",
+        attribute="preferred_visit_day",
+    )
+    assert again.id == wish.id, "same slot value must not duplicate"
+    assert again.corroboration_count == 2
+    trusted_after = await db.factual.recall_for_action("come in Thursday")
+    assert any(m.id == wish.id for m in trusted_after)
+
+
+async def test_eval_1_2_hearsay_needs_corroboration(db: ContextDB) -> None:
+    """EVAL-1.2: third_party claims stay out of recall_for_action until
+    corroboration_count reaches 2 (dedupe by entity+attribute, not string)."""
+    first = await db.factual.add(
+        "A colleague said the office is moving to Denver",
+        source="third_party",
+        confidence=0.6,
+        action_relevant=True,
+        entity="office",
+        attribute="location",
+    )
+    assert first.requires_confirmation is True
+    assert all(
+        m.id != first.id for m in await db.factual.recall_for_action("office move Denver")
+    )
+
+    # Same slot, same value, different speaker: corroborates the occupant
+    # instead of duplicating or superseding it.
+    second = await db.factual.add(
+        "A colleague said the office is moving to Denver",
+        source="third_party",
+        confidence=0.6,
+        action_relevant=True,
+        entity="office",
+        attribute="location",
+    )
+    assert second.id == first.id, "same slot value must corroborate, not duplicate"
+    assert second.corroboration_count == 2
+    assert second.requires_confirmation is False
+    trusted = await db.factual.recall_for_action("office move Denver")
+    assert any(m.id == first.id for m in trusted)
+
+
+async def test_eval_1_3_user_stated_confident_fact_is_immediately_actionable(
+    db: ContextDB,
+) -> None:
+    """EVAL-1.3: source=user_stated at high confidence passes the action bar."""
+    fact = await db.factual.add(
+        "My account number ends in 1234",
+        source="user_stated",
+        confidence=0.95,
+        action_relevant=True,
+        entity="account",
+        attribute="number",
+    )
+    assert fact.requires_confirmation is False
+    trusted = await db.factual.recall_for_action("account number")
+    assert any(m.id == fact.id for m in trusted)
+
+
+async def test_eval_1_4_extraction_sets_epistemic_fields(tmp_path: Path) -> None:
+    """EVAL-1.4: the extraction prompt types source/confidence/action_relevant
+    per fact, and the pipeline persists them."""
+    db = contextdb.init(user_id="eval-user", config=make_config(tmp_path))
+    scripted = MockLLM(
+        responses={
+            "I'd like to come in Thursday": json.dumps(
+                {
+                    "facts": [
+                        {
+                            "content": "The caller wishes to visit on Thursday",
+                            "type": "FACTUAL",
+                            "entities": ["caller"],
+                            "source": "user_stated",
+                            "confidence": 0.5,
+                            "action_relevant": True,
+                            "entity": "caller",
+                            "attribute": "preferred_visit_day",
+                        }
+                    ],
+                    "entities": ["caller"],
+                }
+            )
+        }
+    )
+    db._llm = scripted  # injected before first await; _ensure_init keeps it
+    try:
+        items = await db.add_conversation("I'd like to come in Thursday")
+        assert items, "extraction produced nothing"
+        fact = items[0]
+        assert fact.epistemic_source == "user_stated"
+        assert fact.confidence == 0.5
+        assert fact.action_relevant is True
+        assert fact.entity_key == "caller"
+        assert fact.attribute_key == "preferred_visit_day"
+        assert fact.requires_confirmation is True
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Epic 2 — Temporal validity + supersede
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_2_1_contradiction_supersedes(db: ContextDB) -> None:
+    """EVAL-2.1: '3pm' then 'actually 4pm' => recall returns only 4pm."""
+    first = await db.factual.add(
+        "The meeting is at 3pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    second = await db.factual.add(
+        "Actually, the meeting is at 4pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    assert second.id != first.id
+
+    recalled = await db.factual.recall("when is the meeting")
+    contents = [m.content for m in recalled]
+    assert any("4pm" in c for c in contents), contents
+    assert not any("3pm" in c for c in contents), contents
+
+    # The superseded memory is retained (audit) but closed out.
+    old = await db.get(first.id)
+    assert old is not None
+    assert old.valid_until is not None
+    assert old.superseded_by == second.id
+
+
+async def test_eval_2_2_as_of_returns_historical_value(db: ContextDB) -> None:
+    """EVAL-2.2: as_of before the correction returns 3pm."""
+    await db.factual.add(
+        "The meeting is at 3pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    between = datetime.now(tz=timezone.utc)
+    await db.factual.add(
+        "Actually, the meeting is at 4pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    historical = await db.factual.recall("when is the meeting", as_of=between)
+    contents = [m.content for m in historical]
+    assert any("3pm" in c for c in contents), contents
+    assert not any("4pm" in c for c in contents), contents
+
+
+async def test_eval_2_3_audit_log_shows_supersede_edge(db: ContextDB) -> None:
+    """EVAL-2.3: the audit log records the supersede edge."""
+    first = await db.factual.add(
+        "The meeting is at 3pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    second = await db.factual.add(
+        "Actually, the meeting is at 4pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    assert db.audit is not None
+    history = await db.audit.get_history(memory_id=first.id)
+    supersede = [e for e in history if e.operation == "SUPERSEDE"]
+    assert supersede, "no SUPERSEDE audit entry"
+    assert supersede[0].details["superseded_by"] == second.id
+    assert await db.audit.verify_chain()

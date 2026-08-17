@@ -1,16 +1,24 @@
-"""Factual memory — durable statements of fact.
+"""Factual memory — durable statements of fact, with epistemic typing.
 
-The simplest of the three memory surfaces: a typed filter over
-:meth:`contextdb.client.ContextDB.add` / :meth:`~contextdb.client.ContextDB.search`
-that forces ``memory_type=FACTUAL``. Convenience wrappers add a few
-fact-specific affordances (``recall``, ``update_fact``, ``list_facts``).
+A typed filter over :meth:`contextdb.client.ContextDB.add` /
+:meth:`~contextdb.client.ContextDB.search` that forces
+``memory_type=FACTUAL`` and carries the trust model (Epics 1-3):
+
+* ``add`` accepts epistemic overrides (``source`` / ``confidence`` /
+  ``action_relevant`` / ``entity`` / ``attribute``). Supplying both
+  ``entity`` and ``attribute`` enables slot-based dedupe and supersede.
+* ``recall`` returns currently-valid facts; pass ``as_of`` for time travel.
+* ``recall_for_action`` returns only facts an agent may act on without
+  confirming first: action-relevant AND (corroborated OR first-party at
+  sufficient confidence). Everything else keeps ``requires_confirmation``.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from contextdb.core.models import MemoryItem, MemoryType
+from contextdb.core.models import EpistemicSource, MemoryItem, MemoryType
 
 if TYPE_CHECKING:
     from contextdb.client import ContextDB
@@ -29,7 +37,20 @@ class FactualMemory:
         metadata: dict[str, Any] | None = None,
         entity_mentions: list[str] | None = None,
         confidence: float = 1.0,
+        *,
+        source: EpistemicSource | None = None,
+        action_relevant: bool | None = None,
+        entity: str | None = None,
+        attribute: str | None = None,
     ) -> MemoryItem:
+        """Store a fact.
+
+        ``source`` is the epistemic provenance (who vouches for it); the
+        legacy free-form provenance string on the client is untouched.
+        ``entity`` + ``attribute`` together define the dedupe/contradiction
+        slot: repeat writes of the same value increment
+        ``corroboration_count``; a different value supersedes the old one.
+        """
         meta = dict(metadata or {})
         meta.setdefault("confidence", confidence)
         return await self.client.add(
@@ -37,10 +58,40 @@ class FactualMemory:
             memory_type=MemoryType.FACTUAL,
             metadata=meta,
             entity_mentions=entity_mentions,
+            epistemic_source=source,
+            confidence=confidence,
+            action_relevant=action_relevant,
+            entity_key=entity,
+            attribute_key=attribute,
         )
 
-    async def recall(self, query: str, top_k: int = 5) -> list[MemoryItem]:
-        return await self.client.search(query, top_k=top_k, memory_type=MemoryType.FACTUAL)
+    async def recall(
+        self,
+        query: str,
+        top_k: int = 5,
+        as_of: datetime | None = None,
+    ) -> list[MemoryItem]:
+        """Recall currently-valid facts (or those valid at ``as_of``)."""
+        return await self.client.search(
+            query, top_k=top_k, memory_type=MemoryType.FACTUAL, as_of=as_of
+        )
+
+    async def recall_for_action(
+        self,
+        query: str,
+        top_k: int = 5,
+        as_of: datetime | None = None,
+    ) -> list[MemoryItem]:
+        """Recall only facts an agent may act on without confirming first.
+
+        Filter: ``action_relevant`` AND NOT ``requires_confirmation`` —
+        i.e. corroborated (count >= 2) or first-party user_stated at
+        sufficient confidence. Wishes, hearsay, and low-confidence
+        inferences are excluded until corroborated.
+        """
+        candidates = await self.recall(query, top_k=top_k * 4, as_of=as_of)
+        trusted = [m for m in candidates if m.action_trusted]
+        return trusted[:top_k]
 
     async def update_fact(
         self,
