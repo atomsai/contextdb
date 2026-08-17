@@ -705,3 +705,53 @@ async def test_eval_6_1_explain_reconstructs_formation_and_recall(
         scores[second.id]
     )
     assert second.id in entry["details"]["returned_ids"]
+
+
+# ---------------------------------------------------------------------------
+# Epic 7 — Verifiable forgetting
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_7_1_forget_user_leaves_zero_residue(tmp_path: Path) -> None:
+    """EVAL-7.1: add → consolidate → forget → verify returns true and the
+    audit chain validates."""
+    db = contextdb.init(user_id="alice", config=make_config(tmp_path))
+    try:
+        await db.factual.add(
+            "Alice's account tier is gold",
+            source="user_stated",
+            confidence=0.95,
+            action_relevant=True,
+            entity="account",
+            attribute="tier",
+        )
+        for i in range(6):
+            await db.factual.add_fast(f"Alice mentioned preference {i} for email support")
+        # Consolidate: pending raws are processed; the near-identical
+        # preference memories cluster-merge into a derived summary.
+        await db.consolidate()
+
+        stats = await db.stats()
+        assert stats["total_memories"] >= 1
+
+        deleted = await db.forget_user("alice")
+        assert deleted >= 7  # 1 typed fact + 6 raws (+ any derived summary)
+
+        assert await db.verify_forgotten("alice") is True
+
+        # Re-search finds nothing.
+        assert await db.factual.recall("Alice account tier") == []
+
+        # The audit chain still validates and the FORGET entry is signed
+        # over the deletion set.
+        assert db.audit is not None
+        assert await db.audit.verify_chain() is True
+        history = await db.audit.get_history(user_id="alice")
+        forgets = [e for e in history if e.operation == "FORGET"]
+        assert forgets, "no FORGET audit entry"
+        entry = forgets[-1]
+        assert entry.details["deleted_count"] == deleted
+        assert entry.details["deletion_set_hash"]
+        assert len(entry.details["deleted_ids"]) == deleted
+    finally:
+        await db.close()

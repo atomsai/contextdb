@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import warnings
 from datetime import datetime, timedelta, timezone
@@ -703,6 +704,91 @@ class ContextDB:
                         details={"bulk": True},
                     )
         return deleted
+
+    async def forget_user(self, user_id: str) -> int:
+        """Verifiable forgetting (Epic 7): delete EVERYTHING for a user.
+
+        Raw, archived, and consolidated/derived memories are hard-deleted —
+        deletion that leaves derived memories behind is compliance theater.
+        Derived memories are found by ``metadata.consolidated_from``
+        intersection (to a fixpoint), so even cross-scope derivations are
+        reached. A single FORGET audit entry is written whose details carry
+        the sorted deletion set and its SHA-256 hash; the entry's own
+        hash-chain signature therefore covers exactly what was deleted.
+
+        The audit log itself is append-only and is NOT deleted — the FORGET
+        entry is the proof of erasure. Returns the deletion count.
+        """
+        await self._ensure_init()
+        store = self._require_store()
+
+        targets: dict[str, MemoryItem] = {}
+        async for m in store.iter_memories(user_id=user_id, status=None, batch_size=500):
+            targets[m.id] = m
+
+        # Fixpoint sweep for derived memories (consolidated_from overlap).
+        while True:
+            known = set(targets)
+            added = 0
+            async for m in store.iter_memories(status=None, batch_size=500):
+                if m.id in known:
+                    continue
+                derived_from = m.metadata.get("consolidated_from") or []
+                if isinstance(derived_from, list) and any(
+                    src in known for src in derived_from
+                ):
+                    targets[m.id] = m
+                    added += 1
+            if added == 0:
+                break
+
+        for memory_id in targets:
+            await store.delete(memory_id, hard=True)
+
+        deleted_ids = sorted(targets)
+        deletion_hash = hashlib.sha256(
+            "\n".join(deleted_ids).encode("utf-8")
+        ).hexdigest()
+        if self._audit is not None:
+            await self._audit.log(
+                operation="FORGET",
+                user_id=user_id,
+                details={
+                    "deleted_count": len(deleted_ids),
+                    "deleted_ids": deleted_ids,
+                    "deletion_set_hash": deletion_hash,
+                },
+            )
+        return len(deleted_ids)
+
+    async def verify_forgotten(self, user_id: str) -> bool:
+        """Re-search and assert zero residue after :meth:`forget_user`.
+
+        Checks, in order: (1) no rows for the user in any lifecycle state;
+        (2) every id from the latest FORGET deletion set is gone from the
+        table; (3) no deleted id remains searchable in the vector index.
+        """
+        await self._ensure_init()
+        store = self._require_store()
+        if await store.count_any_status(user_id) > 0:
+            return False
+
+        deleted_ids: list[str] = []
+        if self._audit is not None:
+            entries = await self._audit.get_history(user_id=user_id, limit=1000)
+            forgets = [e for e in entries if e.operation == "FORGET"]
+            if forgets:
+                raw_ids = forgets[-1].details.get("deleted_ids") or []
+                deleted_ids = [str(mid) for mid in raw_ids]
+
+        for memory_id in deleted_ids:
+            if await store.get_raw(memory_id) is not None:
+                return False
+        if deleted_ids:
+            residue = set(deleted_ids) & await store.index_ids()
+            if residue:
+                return False
+        return True
 
     async def stats(self) -> dict[str, Any]:
         await self._ensure_init()

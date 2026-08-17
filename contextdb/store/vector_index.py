@@ -42,6 +42,10 @@ class VectorIndex(ABC):
     def remove(self, ids: list[str]) -> None: ...
 
     @abstractmethod
+    def ids(self) -> list[str]:
+        """All live (searchable) ids — needed by verifiable forgetting."""
+
+    @abstractmethod
     def save(self, path: str) -> None: ...
 
     @abstractmethod
@@ -85,6 +89,9 @@ class NumpyIndex(VectorIndex):
         self._vectors = self._vectors[keep] if keep else np.zeros(
             (0, self.dimension), dtype=np.float32
         )
+
+    def ids(self) -> list[str]:
+        return list(self._ids)
 
     def save(self, path: str) -> None:
         payload = {
@@ -180,6 +187,9 @@ class FAISSIndex(VectorIndex):
         total = len(self._ids)
         if total and len(self._removed_ids) / total > self._rebuild_threshold:
             self.rebuild()
+
+    def ids(self) -> list[str]:
+        return [mid for mid in self._ids if mid not in self._removed_ids]
 
     def rebuild(self) -> None:
         """Reconstruct the underlying FAISS index without the tombstoned ids.

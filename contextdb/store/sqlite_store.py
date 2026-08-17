@@ -555,6 +555,20 @@ class SQLiteStore(BaseStore):
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
+    async def count_any_status(self, user_id: str) -> int:
+        """Rows for a user across ALL lifecycle states — forgetting residue."""
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def index_ids(self) -> set[str]:
+        """Live ids in the vector index — for deletion residue checks."""
+        index = await self._ensure_index()
+        return set(index.ids())
+
     async def count_by_type(self, user_id: str | None = None) -> dict[str, int]:
         """Return active-memory counts bucketed by :class:`MemoryType`.
 
