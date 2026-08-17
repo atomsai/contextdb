@@ -47,7 +47,7 @@ def decay(age_days: float, half_life_days: float = DEFAULT_HALF_LIFE_DAYS) -> fl
     """Exponential recency decay in (0, 1]."""
     if half_life_days <= 0:
         return 1.0
-    return 0.5 ** (age_days / half_life_days)
+    return float(0.5 ** (age_days / half_life_days))
 
 
 def recurrence(item: MemoryItem) -> float:
