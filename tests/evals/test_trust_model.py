@@ -913,3 +913,40 @@ async def test_eval_isolation_no_cross_tenant_bleed(tmp_path: Path) -> None:
         assert (await admin.stats())["total_memories"] == 2
     finally:
         await admin.close()
+
+
+# ---------------------------------------------------------------------------
+# Expert addendum — THE ONE EXPERIMENT: the fabrication bake-off
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_bakeoff_trust_arm_beats_raw_store_on_fabrication(
+    tmp_path: Path,
+) -> None:
+    """The trust arm must beat the raw-store baseline on fabrication rate in
+    our own harness — if it doesn't, the trust work is wrong. The baseline
+    arm existing in the same harness is the control: it proves the traps
+    actually trap."""
+    from benchmarks.trust_bakeoff import (
+        ContextDBTrustArm,
+        RawStoreArm,
+        run_bakeoff,
+    )
+
+    results = await run_bakeoff(
+        [lambda d: ContextDBTrustArm(d), lambda d: RawStoreArm(d)],
+        realtime_writes=100,
+        workdir=tmp_path,
+    )
+    by_name = {r.arm: r for r in results}
+    trust = by_name["contextdb-trust"]
+    raw = by_name["raw-store-baseline"]
+
+    assert trust.fabrication_rate == 0.0, trust.per_trap
+    assert trust.recall_accuracy == 1.0, trust.per_trap
+    assert trust.supersede_correct is True
+    assert trust.write_p95_ms < 10.0
+
+    # Control: the untyped baseline must fail the traps the trust arm passes.
+    assert raw.fabrication_rate >= 0.4, raw.per_trap
+    assert raw.supersede_correct is False

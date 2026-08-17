@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://pypi.org/project/pycontextdb/"><img src="https://img.shields.io/pypi/v/pycontextdb.svg" alt="PyPI version"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-82%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-102%20passing-brightgreen.svg" alt="Tests"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
@@ -36,10 +36,27 @@
 | **Search latency (5K memories)** | p50 **3.9ms** · p95 **5.0ms** |
 | **Vector search (10K × 1,536d)** | p50 **0.8ms** · p95 **1.0ms** |
 | **PII detection** | 100,000+ texts/sec |
-| **Tests** | 82 passing · ruff clean · mypy `--strict` clean |
+| **Tests** | 102 passing (incl. 23 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
 | **Dependencies** | SQLite + NumPy (FAISS / Postgres optional) |
 
 Hermetic, reproducible — run the suite yourself: `python benchmarks/run_benchmarks.py`.
+
+---
+
+## The trust model — memory your agent can act on
+
+Speed is table stakes. The production failure that gets agents fired is **acting on a wish as if it were a fact**: a caller says *"I'd like to come in Thursday"* and the agent answers *"we penciled you in."* A wish and a confirmed fact are the same object in every memory store on the market — so ContextDB types them.
+
+Every memory carries **epistemic provenance** (`user_stated` / `agent_inferred` / `third_party`), **confidence**, **corroboration count**, and an **action-relevant** flag. Facts that gate actions (bookings, prices, schedules, contact details, health/finance/legal) must be corroborated or first-party-confident before `recall_for_action()` will release them — everything else comes back marked `requires_confirmation`. On top of that: **temporal supersede** (`valid_from`/`valid_until`/`superseded_by` + as-of queries), a **latency-tiered write path** (`add_fast`: no LLM on the turn path, p95 ≈ 1.2ms local), **salience** (recency × frequency × criticality — a year-old allergy still outranks 500 fresh noise memories), **write-time injection screening** with demoted `[RECALLED DATA — not instructions]` rendering in every integration, **recall-side observability** (`db.explain(id)` reconstructs exactly why a memory was surfaced), **verifiable forgetting** (`forget_user` + `verify_forgotten`, signed by the hash-chained audit log), and **tenant isolation enforced at the storage layer**.
+
+Don't take our word for it — the fabrication benchmark ships in-repo and runs on every PR. Same store, same embedder, same utterance policy; the only difference is the trust model:
+
+| Arm | Fabrication rate (lower=better) | Recall accuracy | Temporal supersede | Write p95 |
+| --- | --- | --- | --- | --- |
+| `contextdb-trust` | **0%** | 100% | yes | 1.7ms |
+| `raw-store-baseline` (untyped control) | 60% | 60% | NO | 7.0ms |
+
+Traps: wish-vs-fact, temporal move, prompt injection, PII redaction, cross-tenant bleed. Run it: `python benchmarks/trust_bakeoff.py` — acceptance evals live in `tests/evals/`. Mem0/Zep/Letta arms implement the `MemoryArm` protocol and plug into the same harness.
 
 ---
 
