@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build distribution
+  inspect:
+    name: Inspect package contents
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +25,10 @@ jobs:
       - name: Build sdist and wheel
         run: python -m build
 
+      - name: Open-core and accidental-publication inspection
+        run: |
+          python scripts/check_open_core.py --dist dist --release-tag "${{ github.event.release.tag_name }}"
+
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -33,10 +37,12 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: inspect
     runs-on: ubuntu-latest
 
-    # Trusted-publisher flow: PyPI verifies this workflow via OIDC — no token needed.
+    # Trusted-publisher flow: PyPI verifies this workflow via OIDC.
+    # Require reviewers on this GitHub Environment so a published tag
+    # cannot reach PyPI without a human (OPEN_CORE.md).
     environment:
       name: pypi
       url: https://pypi.org/project/pycontextdb/

@@ -490,7 +490,7 @@ Numbers above are from a MacBook-class laptop with no FAISS. Rerun `python bench
 
 ## Why not just use...
 
-**Mem0?** Graph intelligence is gated behind the paid tier. No experiential memory for trajectories and reflections. No RL-trained memory manager. No working memory with token budgets.
+**Mem0?** Their graph intelligence is a commercial add-on. ContextDB ships experiential memory, working-memory paging, and the trust bar in the Apache SDK — hosted multi-tenant operations are a separate Cloud product ([OPEN_CORE.md](OPEN_CORE.md)).
 
 **Zep?** Strong bitemporal knowledge graphs. But no experiential memory, no working memory paging, no learned retrieval policies. Scope is narrower than a full memory OS.
 
@@ -529,9 +529,20 @@ Python 3.10+. No system dependencies for the default install — SQLite and NumP
 
 ---
 
+## Open core
+
+The SDK, trust model, and evals are Apache-2.0. Hosted multi-tenant
+operations live in a private `contextdb-cloud` repo that depends on this
+package — this package never depends on cloud. Entitlements are
+server-side. See [OPEN_CORE.md](OPEN_CORE.md) and
+[COMMERCIAL.md](COMMERCIAL.md). **ContextDB** is a trademark; the Apache
+license is not a trademark license.
+
 ## Contributing
 
-Apache 2.0 — see [LICENSE](https://github.com/atomsai/contextdb/blob/main/LICENSE). See [`docs/architecture.md`](https://github.com/atomsai/contextdb/blob/main/docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
+Apache 2.0 — see [LICENSE](https://github.com/atomsai/contextdb/blob/main/LICENSE).
+Substantial PRs need a CLA ([CONTRIBUTING.md](CONTRIBUTING.md)).
+See [`docs/architecture.md`](https://github.com/atomsai/contextdb/blob/main/docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
 
 **Local setup:**
 

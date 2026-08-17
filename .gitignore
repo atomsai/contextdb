@@ -66,3 +66,7 @@ contextdb.db
 .env.*
 secrets/
 Untitled*
+
+# CLA acceptances (personal data — keep out of the sdist)
+legal/signed/*
+!legal/signed/README.md

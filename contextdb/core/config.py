@@ -108,8 +108,8 @@ class ContextDBConfig(BaseSettings):
         description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     )
 
-    # Tier / feature flags. Single-graph semantic memory is always on; every
-    # richer pathway is explicit so operators can cleanly A/B free vs paid.
+    # Optional local pathways in the open SDK — not entitlements. Cloud
+    # features are never gated by a boolean in this package.
     enable_entity_graph: bool = Field(default=True)
     enable_multi_graph: bool = Field(default=False)
     enable_rl_manager: bool = Field(default=False)

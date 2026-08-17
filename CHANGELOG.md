@@ -25,6 +25,10 @@ GitHub `main`: memory an agent can act on without treating a wish as a fact.
 - MCP tools: `remember` / `recall` / `recall_for_action` / `forget` / `confirm`.
 - In-repo fabrication bake-off: `python benchmarks/trust_bakeoff.py`
   (trust arm vs our own untyped control — not a live Mem0/Zep run).
+- Open-core governance: [OPEN_CORE.md](OPEN_CORE.md),
+  [COMMERCIAL.md](COMMERCIAL.md), CLA, CODEOWNERS, package-boundary CI,
+  and release inspection. Code through `2554dae` remains Apache-2.0.
+  Cloud is a private repo that depends on this SDK, never the reverse.
 
 ### Fixed
 

@@ -8,6 +8,7 @@ version = "0.2.0"
 description = "The unified context layer for AI agents — memory you can act on without treating wishes as facts"
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 authors = [
     { name = "Gaurav Sharma", email = "gaurav@saaslabs.co" },
@@ -131,6 +132,10 @@ exclude = [
     "*.pdf",
     "contextdb-*.md",
     "agentic-memory-*.md",
+    "contextdb_cloud/",
+    "cloud/",
+    ".cursor/",
+    "legal/signed/",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -148,4 +153,8 @@ exclude = [
     "*.pdf",
     "contextdb-*.md",
     "agentic-memory-*.md",
+    "contextdb_cloud/",
+    "cloud/",
+    ".cursor/",
+    "legal/signed/",
 ]

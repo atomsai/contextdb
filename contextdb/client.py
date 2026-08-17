@@ -249,7 +249,7 @@ class ContextDB:
             ),
         )
 
-        # RL (optional, paid tier)
+        # RL (optional local pathway)
         if self.config.enable_rl_manager:
             from contextdb.agents.rl_manager import RLMemoryManager
 

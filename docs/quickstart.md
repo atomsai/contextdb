@@ -41,12 +41,15 @@ db = contextdb.init(
     storage_url="postgresql://localhost/ctx",
     embedding_model="text-embedding-3-small",
     llm_model="gpt-4o-mini",
-    enable_multi_graph=True,   # unlocks temporal + causal graphs (paid tier)
-    enable_rl_manager=False,   # RL ADD/UPDATE/DELETE/NOOP policy (paid tier)
+    enable_multi_graph=True,   # optional local temporal + causal graphs
+    enable_rl_manager=False,   # optional local ADD/UPDATE/DELETE/NOOP policy
 )
 ```
 
-## Tier flags
+## Optional local features
+
+These flags are pathways in the Apache SDK, not paid entitlements.
+See [OPEN_CORE.md](../OPEN_CORE.md).
 
 | Flag | Default | What it enables |
 |------|---------|------------------|
