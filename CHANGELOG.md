@@ -30,8 +30,9 @@ GitHub `main`: memory an agent can act on without treating a wish as a fact.
 
 - `contextdb.__version__` no longer drifts from `pyproject.toml` (was `0.1.0`
   while the project version was `0.1.1`).
-- CI mypy on Python 3.12: skip NumPy stubs so NumPy 2.5's PEP 695 `type`
-  aliases cannot red the job while we still type-check as 3.10.
+- CI mypy on Python 3.12: type-check as the running interpreter so
+  NumPy 2.5's PEP 695 `type` aliases parse. The 3.10 job still guards
+  our runtime floor.
 
 ## 0.1.1 — 2026-04-22
 
