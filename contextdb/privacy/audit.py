@@ -22,7 +22,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -81,7 +81,7 @@ def _compute_hash(payload: str) -> str:
 class AuditLogger:
     """Append-only audit log with per-entry SHA-256 chaining."""
 
-    def __init__(self, store: SQLiteStore) -> None:
+    def __init__(self, store: BaseStore) -> None:
         self.store = store
 
     async def initialize(self) -> None:

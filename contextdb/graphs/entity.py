@@ -16,7 +16,7 @@ from contextdb.core.models import Edge, Entity
 from contextdb.graphs.base import BaseGraph
 
 if TYPE_CHECKING:
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
     from contextdb.utils.llm import LLMProvider
 
 _SCHEMA = """
@@ -79,7 +79,7 @@ def _safe_json(text: str) -> dict[str, Any]:
 class EntityGraph(BaseGraph):
     """LLM-extracted entity overlay over the memory store."""
 
-    def __init__(self, store: SQLiteStore, llm: LLMProvider) -> None:
+    def __init__(self, store: BaseStore, llm: LLMProvider) -> None:
         super().__init__(store)
         self.llm = llm
 

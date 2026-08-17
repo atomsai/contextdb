@@ -281,6 +281,10 @@ class MemoryItem(BaseModel):
         default=False,
         description="True when the utterance denies the slot value.",
     )
+    user_id: str | None = Field(
+        default=None,
+        description="User scope stamped on the row. Distinct from tenant_id.",
+    )
     tenant_id: str | None = Field(default=None)
     agent_id: str | None = Field(default=None)
     session_id: str | None = Field(default=None)

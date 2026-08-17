@@ -43,8 +43,9 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "action_relevant": {"type": "boolean"},
                 "entity": {"type": "string"},
                 "attribute": {"type": "string"},
+                "user_id": {"type": "string"},
             },
-            "required": ["content"],
+            "required": ["content", "source"],
         },
     },
     {
@@ -60,6 +61,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "query": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
                 "max_tokens": {"type": "integer", "default": 512},
+                "user_id": {"type": "string"},
+                "entity": {"type": "string"},
+                "min_confidence": {"type": "number"},
+                "include_third_party": {"type": "boolean"},
             },
             "required": ["query"],
         },
@@ -75,17 +80,25 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
             "properties": {
                 "query": {"type": "string"},
                 "top_k": {"type": "integer", "default": 5},
+                "user_id": {"type": "string"},
             },
             "required": ["query"],
         },
     },
     {
         "name": "forget",
-        "description": "Verifiably delete all memories for a user (GDPR erasure).",
+        "description": (
+            "Delete memories. user_id alone is GDPR erasure. "
+            "memory_id deletes one fact. entity+attribute deletes a slot."
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {"user_id": {"type": "string"}},
-            "required": ["user_id"],
+            "properties": {
+                "user_id": {"type": "string"},
+                "memory_id": {"type": "string"},
+                "entity": {"type": "string"},
+                "attribute": {"type": "string"},
+            },
         },
     },
     {
@@ -96,8 +109,31 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"memory_id": {"type": "string"}},
+            "properties": {
+                "memory_id": {"type": "string"},
+                "user_id": {"type": "string"},
+            },
             "required": ["memory_id"],
+        },
+    },
+    {
+        "name": "pending_confirmations",
+        "description": "List action-relevant facts still waiting for a yes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"user_id": {"type": "string"}, "limit": {"type": "integer"}},
+        },
+    },
+    {
+        "name": "remember_many",
+        "description": "Batch LLM-free writes. Each item is content plus optional source.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array"},
+                "user_id": {"type": "string"},
+            },
+            "required": ["items"],
         },
     },
 ]
@@ -139,23 +175,40 @@ class ContextDBMCPServer:
             return await self._forget(arguments)
         if name == "confirm":
             return await self._confirm(arguments)
+        if name == "pending_confirmations":
+            return await self._pending(arguments)
+        if name == "remember_many":
+            return await self._remember_many(arguments)
         raise ConfigError(f"Unknown MCP tool '{name}'.")
 
     async def _remember(self, args: dict[str, Any]) -> dict[str, Any]:
+        source = args.get("source")
+        if not source:
+            raise ConfigError(
+                "remember requires source: user_stated | agent_inferred | third_party"
+            )
         item = await self.client.factual.add(
             str(args["content"]),
-            source=args.get("source"),
+            source=source,
             confidence=float(args.get("confidence", 1.0)),
             action_relevant=args.get("action_relevant"),
             entity=args.get("entity"),
             attribute=args.get("attribute"),
+            user_id=args.get("user_id"),
         )
         return {"memory": _serialize(item)}
 
     async def _recall(self, args: dict[str, Any]) -> dict[str, Any]:
         top_k = int(args.get("top_k", 5))
         max_tokens = int(args.get("max_tokens", 512))
-        items = await self.client.factual.recall(str(args["query"]), top_k=top_k)
+        items = await self.client.factual.recall(
+            str(args["query"]),
+            top_k=top_k,
+            user_id=args.get("user_id"),
+            entity=args.get("entity"),
+            min_confidence=args.get("min_confidence"),
+            include_third_party=bool(args.get("include_third_party", True)),
+        )
         return {
             "context": render_recalled_context(items, max_tokens=max_tokens),
             "memories": [_serialize(m) for m in items],
@@ -164,19 +217,49 @@ class ContextDBMCPServer:
     async def _recall_for_action(self, args: dict[str, Any]) -> dict[str, Any]:
         top_k = int(args.get("top_k", 5))
         items = await self.client.factual.recall_for_action(
-            str(args["query"]), top_k=top_k
+            str(args["query"]), top_k=top_k, user_id=args.get("user_id")
         )
         return {"memories": [_serialize(m) for m in items]}
 
     async def _forget(self, args: dict[str, Any]) -> dict[str, Any]:
-        user_id = str(args["user_id"])
+        if args.get("memory_id"):
+            deleted = await self.client.forget(
+                user_id=args.get("user_id"), memory_id=str(args["memory_id"])
+            )
+            return {"deleted": deleted}
+        if args.get("entity") and args.get("attribute"):
+            deleted = await self.client.forget(
+                user_id=args.get("user_id"),
+                entity=str(args["entity"]),
+                attribute=str(args["attribute"]),
+            )
+            return {"deleted": deleted}
+        user_id = str(args.get("user_id") or "")
+        if not user_id:
+            raise ConfigError("forget requires user_id, memory_id, or entity+attribute")
         deleted = await self.client.forget_user(user_id)
         verified = await self.client.verify_forgotten(user_id)
         return {"deleted": deleted, "verified": verified}
 
     async def _confirm(self, args: dict[str, Any]) -> dict[str, Any]:
-        item = await self.client.factual.confirm(str(args["memory_id"]))
+        item = await self.client.factual.confirm(
+            str(args["memory_id"]), user_id=args.get("user_id")
+        )
         return {"memory": _serialize(item)}
+
+    async def _pending(self, args: dict[str, Any]) -> dict[str, Any]:
+        items = await self.client.factual.pending_confirmations(
+            user_id=args.get("user_id"),
+            limit=int(args.get("limit", 100)),
+        )
+        return {"memories": [_serialize(m) for m in items]}
+
+    async def _remember_many(self, args: dict[str, Any]) -> dict[str, Any]:
+        items = args.get("items") or []
+        if not isinstance(items, list):
+            raise ConfigError("items must be a list")
+        stored = await self.client.factual.add_many(items, user_id=args.get("user_id"))
+        return {"memories": [_serialize(m) for m in stored]}
 
 
 async def serve_stdio(client: ContextDB) -> None:

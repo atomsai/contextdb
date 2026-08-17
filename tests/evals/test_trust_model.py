@@ -871,6 +871,7 @@ async def test_eval_8_1b_mcp_server_and_livekit_smoke(tmp_path: Path) -> None:
             "remember",
             {
                 "content": "The deploy window is Friday 2am",
+                "source": "user_stated",
                 "entity": "deploy",
                 "attribute": "window",
                 "confidence": 0.9,

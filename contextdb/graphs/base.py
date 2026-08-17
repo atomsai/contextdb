@@ -12,13 +12,13 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from contextdb.core.models import Edge
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
 
 
 class BaseGraph(ABC):
     """Common contract for all graphs over memory items."""
 
-    def __init__(self, store: SQLiteStore) -> None:
+    def __init__(self, store: BaseStore) -> None:
         self.store = store
 
     @abstractmethod

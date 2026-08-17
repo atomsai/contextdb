@@ -33,7 +33,7 @@ from contextdb.dynamics.salience import (
 
 if TYPE_CHECKING:
     from contextdb.graphs.base import BaseGraph
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
 
 
 _TEMPORAL_MARKERS = re.compile(
@@ -126,7 +126,7 @@ class RetrievalEngine:
 
     def __init__(
         self,
-        store: SQLiteStore,
+        store: BaseStore,
         graphs: dict[str, BaseGraph],
         classifier: QueryClassifier,
         fuser: RetrievalFuser,
@@ -147,18 +147,27 @@ class RetrievalEngine:
         query: str,
         query_embedding: list[float],
         top_k: int = 10,
+        user_id: str | None = None,
     ) -> list[MemoryItem]:
-        return [s.item for s in await self.search_scored(query, query_embedding, top_k=top_k)]
+        return [
+            s.item
+            for s in await self.search_scored(
+                query, query_embedding, top_k=top_k, user_id=user_id
+            )
+        ]
 
     async def search_scored(
         self,
         query: str,
         query_embedding: list[float],
         top_k: int = 10,
+        user_id: str | None = None,
     ) -> list[ScoredMemory]:
-        """RRF-fuse per-graph rankings, then multiply by salience (Epic 4)."""
+        """RRF-fuse per-graph rankings, then multiply by salience."""
         weights = self.classifier.classify(query)
-        seed_items = await self.store.search_by_embedding(query_embedding, top_k=top_k * 2)
+        seed_items = await self.store.search_by_embedding(
+            query_embedding, top_k=top_k * 2, user_id=user_id
+        )
         semantic_ranking = [(item.id, 1.0 / (rank + 1)) for rank, item in enumerate(seed_items)]
         rankings: dict[str, list[tuple[str, float]]] = {"semantic": semantic_ranking}
 

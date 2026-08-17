@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://pypi.org/project/pycontextdb/"><img src="https://img.shields.io/pypi/v/pycontextdb.svg" alt="PyPI version"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-122%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-139%20passing-brightgreen.svg" alt="Tests"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
@@ -36,8 +36,13 @@
 | **Search latency (5K memories)** | p50 **3.9ms** · p95 **5.0ms** |
 | **Vector search (10K × 1,536d)** | p50 **0.8ms** · p95 **1.0ms** |
 | **PII detection** | 100,000+ texts/sec |
-| **Tests** | 122 passing (incl. 34 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
+| **Tests** | 139 passing (incl. 34 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
 | **Dependencies** | SQLite + NumPy (FAISS / Postgres optional) |
+
+Those search numbers are **SQLite + the in-repo mock embedder**. A recall
+that embeds the query with OpenAI is typically **100–300ms** before the
+store is touched. Use `embedding_cache_size`, `pip install 'pycontextdb[local]'`,
+or `lexical_on_embed_failure` when the voice turn budget cannot wait.
 
 Hermetic, reproducible — run the suite yourself: `python benchmarks/run_benchmarks.py`.
 
@@ -528,6 +533,27 @@ pip install "pycontextdb[all]"          # everything
 Python 3.10+. No system dependencies for the default install — SQLite and NumPy ship with Python.
 
 ---
+
+## HTTP and multi-tenant hosts
+
+```bash
+pip install 'pycontextdb[serve]'
+contextdb serve --http --port 8080 --token "$CONTEXTDB_SERVE_TOKEN"
+```
+
+One process, many users: `init()` without `user_id`, then pass `user_id=`
+on each call (or `X-ContextDB-User` on HTTP). Postgres:
+
+```bash
+pip install 'pycontextdb[postgres]'
+```
+
+```python
+db = contextdb.init(storage_url="postgresql://...")
+```
+
+See [docs/serve.md](docs/serve.md), [docs/multi_tenant.md](docs/multi_tenant.md),
+and [docs/trust_policy.md](docs/trust_policy.md).
 
 ## Open core
 

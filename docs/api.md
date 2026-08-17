@@ -29,15 +29,21 @@ async def add(content, memory_type=FACTUAL, metadata=None, event_time=None,
 async def add_fast(content, memory_type=FACTUAL, ...) -> MemoryItem
     # Never calls an LLM. Recallable immediately; consolidate later.
 async def search(query, top_k=10, memory_type=None, time_range=None,
-                 as_of=None, compose=False) -> list[MemoryItem]
+                 as_of=None, compose=False, *, user_id=None, entity=None,
+                 min_confidence=None, include_third_party=True) -> list[MemoryItem]
     # Queries are PII-redacted before embed. compose hops sibling slots.
-async def confirm(memory_id) -> MemoryItem
+async def confirm(memory_id, user_id=None) -> MemoryItem
 async def get(memory_id) -> MemoryItem | None
 async def update(memory_id, content=None, metadata=None) -> MemoryItem
 async def delete(memory_id, hard=False) -> None
 async def add_conversation(conversation, source="") -> list[MemoryItem]
-async def forget(user_id=None, entity=None, older_than=None) -> int
+async def add_many(items, *, user_id=None) -> list[MemoryItem]
+async def add_fast_many(contents, *, user_id=None) -> list[MemoryItem]
+async def pending_confirmations(user_id=None, limit=100) -> list[MemoryItem]
+async def forget(user_id=None, entity=None, older_than=None, *,
+                 memory_id=None, attribute=None) -> int
 async def forget_user(user_id) -> int
+db.on(event, hook)  # write, recall, confirm, forget, injection_suspect, embed_fallback
 async def verify_forgotten(user_id) -> bool
 async def explain(memory_id) -> MemoryExplanation
 async def stats() -> dict
@@ -51,11 +57,13 @@ async def get_entity(name) -> dict
 ### Typed surfaces
 
 * `db.factual` — `FactualMemory`
-  * `add(..., source=, confidence=, action_relevant=, entity=, attribute=)`
-  * `add_fast(content)` — no LLM
-  * `recall(query, top_k=5, as_of=None)` — currently-valid facts (composes sibling slots)
-  * `recall_for_action(query, ...)` — only facts that pass `db.trust_policy`
-  * `confirm(memory_id)` — user said yes; graduates the fact
+  * `add(..., source=, confidence=, action_relevant=, entity=, attribute=, user_id=)`
+  * `add_fast(content, user_id=)` — no LLM
+  * `add_many(items, user_id=)` — batch; missing source uses add_fast
+  * `recall(query, top_k=5, as_of=None, user_id=, entity=, min_confidence=, include_third_party=)`
+  * `recall_for_action(query, ..., user_id=)` — only facts that pass `db.trust_policy`
+  * `confirm(memory_id, user_id=)` — user said yes; graduates the fact
+  * `pending_confirmations(user_id=)` — facts waiting on a yes
 * `db.experiential` — `ExperientialMemory`
 * `db.working(session_id, max_tokens=4000)` — `WorkingMemory`
 

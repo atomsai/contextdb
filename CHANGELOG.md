@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Host-adoption work from serviceagent integration:
+
+- `contextdb serve --http` (`pycontextdb[serve]`) — JSON API + `/mcp`, Bearer token, `auth_hook`.
+- Per-call `user_id=` on add/recall/confirm/forget. Shared `init()` is the multi-tenant path; `ContextDBPool` is LRU if you still need one client per user.
+- OSS `PostgresStore` for `postgresql://` URLs (`pycontextdb[postgres]`).
+- `factual.pending_confirmations()`, `forget(memory_id=)` / `forget(entity=, attribute=)`, `add_many` / `add_fast_many`.
+- Recall filters: `entity`, `min_confidence`, `include_third_party`.
+- `db.on(event, hook)` for write/recall/confirm/forget/injection_suspect.
+- Query embedding LRU cache; lexical recall if embedding fails.
+- Missing epistemic `source` warns in the SDK; HTTP/MCP remember return 400.
+- Docs: trust policy matrix, Postgres, multi-tenant, SQLite migrations.
+
+`contextdb.init`, `factual.add`, `factual.recall`, and `search` keep working. New keyword arguments are optional.
+
 ## 0.2.0 — 2026-08-17
 
 First PyPI cut of the trust model. `pip install pycontextdb` now matches

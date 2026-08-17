@@ -115,6 +115,31 @@ class ContextDBConfig(BaseSettings):
     enable_rl_manager: bool = Field(default=False)
     enable_audit: bool = Field(default=True)
     enable_auto_link: bool = Field(default=True)
+    require_source: bool = Field(
+        default=False,
+        description=(
+            "If true, factual.add / remember raise when epistemic source "
+            "is omitted. HTTP and MCP remember always require it. The "
+            "Python SDK defaults to a warning so existing callers keep working."
+        ),
+    )
+    embedding_cache_size: int = Field(
+        default=2048,
+        ge=0,
+        description="LRU size for query/write embedding strings. 0 disables.",
+    )
+    embed_timeout_seconds: float | None = Field(
+        default=None,
+        description="If set, embedding calls abort after this many seconds.",
+    )
+    lexical_on_embed_failure: bool = Field(
+        default=True,
+        description=(
+            "If an embedding call fails or times out, recall falls back to "
+            "token overlap instead of raising. Writes still fail — a write "
+            "without an embedding cannot be retrieved later."
+        ),
+    )
 
     @field_validator("llm_api_key", mode="before")
     @classmethod

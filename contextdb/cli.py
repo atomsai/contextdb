@@ -52,6 +52,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_import = sub.add_parser("import", help="Import a ContextDB JSON dump.")
     p_import.add_argument("path")
 
+    p_serve = sub.add_parser("serve", help="Serve HTTP JSON (and /mcp) for non-Python hosts.")
+    p_serve.add_argument("--http", action="store_true", default=True, help="HTTP JSON API.")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8080)
+    p_serve.add_argument("--token", default=None, help="Bearer token. Or CONTEXTDB_SERVE_TOKEN.")
+    p_serve.add_argument(
+        "--allow-anonymous",
+        action="store_true",
+        help="Allow unauthenticated requests (loopback only unless you pass this).",
+    )
+
     return parser
 
 
@@ -90,6 +101,17 @@ async def _run(args: argparse.Namespace) -> int:
             importer = JSONImporter(client)
             count = await importer.import_path(Path(args.path))
             print(f"Imported {count} memories from {args.path}")
+        elif args.command == "serve":
+            from contextdb.serve import serve_http
+
+            await serve_http(
+                client,
+                host=args.host,
+                port=args.port,
+                token=args.token,
+                allow_anonymous=args.allow_anonymous,
+            )
+            return 0
         else:
             return 1
         return 0

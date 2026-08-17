@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
@@ -147,6 +148,65 @@ class MockEmbedding(EmbeddingProvider):
 
     def dimension(self) -> int:
         return self._dim
+
+
+class CachedEmbeddingProvider(EmbeddingProvider):
+    """LRU cache over exact input strings. Query embeddings repeat a lot."""
+
+    def __init__(self, inner: EmbeddingProvider, maxsize: int = 2048) -> None:
+        self._inner = inner
+        self._maxsize = maxsize
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if self._maxsize <= 0 or not texts:
+            return await self._inner.embed(texts)
+        missing: list[str] = []
+        seen: set[str] = set()
+        for text in texts:
+            if text in self._cache:
+                self._cache.move_to_end(text)
+            elif text not in seen:
+                missing.append(text)
+                seen.add(text)
+        if missing:
+            vectors = await self._inner.embed(missing)
+            for text, vector in zip(missing, vectors, strict=True):
+                self._cache[text] = vector
+                if len(self._cache) > self._maxsize:
+                    self._cache.popitem(last=False)
+        return [self._cache[text] for text in texts]
+
+    def dimension(self) -> int:
+        return self._inner.dimension()
+
+
+class TimeoutEmbeddingProvider(EmbeddingProvider):
+    """Fail an embedding call after ``timeout_seconds`` so voice turns can degrade."""
+
+    def __init__(self, inner: EmbeddingProvider, timeout_seconds: float) -> None:
+        self._inner = inner
+        self._timeout = timeout_seconds
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return await asyncio.wait_for(self._inner.embed(texts), timeout=self._timeout)
+
+    def dimension(self) -> int:
+        return self._inner.dimension()
+
+
+def wrap_embedder(
+    provider: EmbeddingProvider,
+    *,
+    cache_size: int = 2048,
+    timeout_seconds: float | None = None,
+) -> EmbeddingProvider:
+    wrapped: EmbeddingProvider = provider
+    if timeout_seconds is not None and timeout_seconds > 0:
+        wrapped = TimeoutEmbeddingProvider(wrapped, timeout_seconds)
+    if cache_size > 0:
+        wrapped = CachedEmbeddingProvider(wrapped, maxsize=cache_size)
+    return wrapped
 
 
 def get_embedding_provider(

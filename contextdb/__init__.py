@@ -12,6 +12,7 @@ from contextdb.core.exceptions import (
     ContextDBError,
     MemoryNotFoundError,
     PrivacyError,
+    SourceRequiredError,
     StorageError,
 )
 from contextdb.core.models import (
@@ -25,6 +26,7 @@ from contextdb.core.models import (
     RetentionPolicy,
 )
 from contextdb.core.policy import TrustPolicy
+from contextdb.pool import ContextDBPool
 
 __version__ = "0.2.0"
 
@@ -34,6 +36,7 @@ __all__ = [
     "ContextDB",
     "ContextDBConfig",
     "ContextDBError",
+    "ContextDBPool",
     "Edge",
     "Entity",
     "FrozenClock",
@@ -45,6 +48,7 @@ __all__ = [
     "PIIType",
     "PrivacyError",
     "RetentionPolicy",
+    "SourceRequiredError",
     "StorageError",
     "TrustPolicy",
     "__version__",
@@ -70,7 +74,9 @@ def init(
     any I/O method, so ``init()`` itself does not touch the disk or network.
 
     Args:
-        user_id: Optional user scope. Every write carries this as a filter.
+        user_id: Default user scope. Omit this and pass ``user_id=`` on
+            each call for a shared multi-tenant client. A scoped client
+            cannot be widened to another user.
         config: Pre-built configuration. When ``None`` one is constructed
             from ``kwargs`` and environment variables prefixed with
             ``CONTEXTDB_``.

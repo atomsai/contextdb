@@ -31,7 +31,7 @@ from contextdb.core.slots import Slot, canonical_slot_value, canonicalize_slot
 
 if TYPE_CHECKING:
     from contextdb.privacy.audit import AuditLogger
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
 
 WriteOutcome = Literal["added", "corroborated", "superseded", "ignored", "contested"]
 
@@ -113,7 +113,7 @@ class TrustEngine:
 
     def __init__(
         self,
-        store: SQLiteStore,
+        store: BaseStore,
         audit: AuditLogger | None = None,
         clock: Clock = utc_now,
     ) -> None:
@@ -152,7 +152,9 @@ class TrustEngine:
             await self._log("CREATE", stored.id, user_id, {"trust": "unkeyed"})
             return stored, "added"
 
-        lock = await self.store.slot_lock(item.entity_key, item.attribute_key)
+        lock = await self.store.slot_lock(
+            item.entity_key, item.attribute_key, user_id=user_id
+        )
         async with lock:
             return await self._write_locked(item, user_id, now, slot)
 
@@ -163,7 +165,9 @@ class TrustEngine:
         now: datetime,
         slot: Slot | None,
     ) -> tuple[MemoryItem, WriteOutcome]:
-        slot_rows = await self.store.list_by_slot(item.entity_key or "", item.attribute_key or "")
+        slot_rows = await self.store.list_by_slot(
+            item.entity_key or "", item.attribute_key or "", user_id=user_id
+        )
         current = [c for c in slot_rows if c.id != item.id and c.is_valid_at(now)]
         max_gen = max((c.write_generation for c in slot_rows), default=0)
 
@@ -317,7 +321,9 @@ class TrustEngine:
         # Resolving a contest: the confirmed value closes every other
         # current occupant of the slot.
         if updated.entity_key and updated.attribute_key:
-            rivals = await self.store.list_by_slot(updated.entity_key, updated.attribute_key)
+            rivals = await self.store.list_by_slot(
+                updated.entity_key, updated.attribute_key, user_id=user_id
+            )
             for rival in rivals:
                 if rival.id == updated.id or not rival.is_valid_at(now):
                     continue

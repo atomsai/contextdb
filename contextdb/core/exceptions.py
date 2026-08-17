@@ -27,3 +27,7 @@ class PrivacyError(ContextDBError):
 
 class ConfigError(ContextDBError):
     """Raised when ContextDB is misconfigured."""
+
+
+class SourceRequiredError(ConfigError):
+    """Raised when a write omits epistemic ``source`` and the host requires it."""

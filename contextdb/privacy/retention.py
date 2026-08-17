@@ -18,7 +18,7 @@ from contextdb.core.models import MemoryStatus, MemoryType, RetentionPolicy
 
 if TYPE_CHECKING:
     from contextdb.privacy.audit import AuditLogger
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
 
 
 _TYPE_TO_TTL: dict[MemoryType, str] = {
@@ -33,7 +33,7 @@ class RetentionManager:
 
     def __init__(
         self,
-        store: SQLiteStore,
+        store: BaseStore,
         audit: AuditLogger | None,
         policy: RetentionPolicy,
     ) -> None:

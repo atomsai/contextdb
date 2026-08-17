@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 from contextdb.core.models import MemoryStatus
 
 if TYPE_CHECKING:
+    import asyncio
+
     from contextdb.core.models import MemoryItem, MemoryType
 
 
@@ -48,8 +51,13 @@ class BaseStore(ABC):
         embedding: list[float],
         top_k: int = 10,
         filters: dict[str, object] | None = None,
+        user_id: str | None = None,
     ) -> list[MemoryItem]:
-        """Return top-k most similar memories by cosine similarity."""
+        """Return top-k most similar memories by cosine similarity.
+
+        ``user_id`` filters the result. A store constructed with a fixed
+        user scope ignores a conflicting per-call value and stays scoped.
+        """
 
     @abstractmethod
     async def list_memories(
@@ -69,3 +77,65 @@ class BaseStore(ABC):
     @abstractmethod
     async def close(self) -> None:
         """Release resources."""
+
+    def _require_conn(self) -> Any:
+        """SQLite/Postgres connection adapter used by graphs and the audit log."""
+        raise NotImplementedError
+
+    async def get_raw(self, memory_id: str) -> MemoryItem | None:
+        """Fetch without bumping access counters. Default: :meth:`get`."""
+        return await self.get(memory_id)
+
+    async def list_by_slot(
+        self,
+        entity_key: str,
+        attribute_key: str,
+        status: MemoryStatus | None = MemoryStatus.ACTIVE,
+        user_id: str | None = None,
+    ) -> list[MemoryItem]:
+        raise NotImplementedError
+
+    async def list_by_entity(
+        self,
+        entity_key: str,
+        status: MemoryStatus | None = MemoryStatus.ACTIVE,
+        user_id: str | None = None,
+    ) -> list[MemoryItem]:
+        raise NotImplementedError
+
+    async def list_pending_consolidation(self, limit: int = 100) -> list[MemoryItem]:
+        raise NotImplementedError
+
+    async def count_any_status(self, user_id: str) -> int:
+        raise NotImplementedError
+
+    async def count_by_type(self, user_id: str | None = None) -> dict[str, int]:
+        raise NotImplementedError
+
+    def iter_memories(
+        self,
+        user_id: str | None = None,
+        memory_type: MemoryType | None = None,
+        status: MemoryStatus | None = MemoryStatus.ACTIVE,
+        batch_size: int = 500,
+    ) -> AsyncIterator[MemoryItem]:
+        raise NotImplementedError
+
+    async def delete_older_than(
+        self,
+        iso_cutoff: str,
+        user_id: str | None = None,
+        hard: bool = True,
+    ) -> int:
+        raise NotImplementedError
+
+    async def index_ids(self) -> set[str]:
+        raise NotImplementedError
+
+    async def slot_lock(
+        self,
+        entity_key: str,
+        attribute_key: str,
+        user_id: str | None = None,
+    ) -> asyncio.Lock:
+        raise NotImplementedError

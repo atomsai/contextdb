@@ -205,6 +205,7 @@ def _row_to_item(row: Mapping[str, Any]) -> MemoryItem:
         session_id=row.get("session_id"),
         pii_shadow=row.get("pii_shadow"),
         contested=bool(row.get("contested") or 0),
+        user_id=row.get("user_id"),
     )
 
 
@@ -310,7 +311,12 @@ class SQLiteStore(BaseStore):
             params.append(self._agent_id)
         return " AND ".join(clauses), params
 
-    async def slot_lock(self, entity_key: str, attribute_key: str) -> asyncio.Lock:
+    async def slot_lock(
+        self,
+        entity_key: str,
+        attribute_key: str,
+        user_id: str | None = None,
+    ) -> asyncio.Lock:
         """Lock keyed on (user, tenant, entity, attribute) — not the row.
 
         Two concurrent "actually 4pm" / "actually 5pm" writes into the
@@ -318,7 +324,8 @@ class SQLiteStore(BaseStore):
         ``SELECT … FOR UPDATE`` on this key; SQLite serializes via this
         in-process lock plus the global write lock.
         """
-        key = (self._user_id or "", self._tenant_id or "", entity_key, attribute_key)
+        scope = self._resolve_scope(user_id)
+        key = (scope or "", self._tenant_id or "", entity_key, attribute_key)
         async with self._slot_locks_guard:
             lock = self._slot_locks.get(key)
             if lock is None:
@@ -348,6 +355,10 @@ class SQLiteStore(BaseStore):
 
     async def add(self, item: MemoryItem) -> MemoryItem:
         conn = self._require_conn()
+        uid = item.user_id or self._user_id
+        if self._user_id is not None and uid is not None and uid != self._user_id:
+            raise StorageError("cannot write another user's memory into a scoped store")
+        item.user_id = uid
         blob, dim = _embedding_to_blob(item.embedding)
         async with self._write_lock:
             await conn.execute(
@@ -377,7 +388,7 @@ class SQLiteStore(BaseStore):
                     item.memory_type.value,
                     item.source,
                     json.dumps(item.metadata),
-                    self._user_id,
+                    uid,
                     item.event_time.isoformat() if item.event_time else None,
                     item.ingestion_time.isoformat(),
                     json.dumps([a.model_dump(mode="json") for a in item.pii_annotations]),
@@ -594,11 +605,12 @@ class SQLiteStore(BaseStore):
         embedding: list[float],
         top_k: int = 10,
         filters: dict[str, object] | None = None,
+        user_id: str | None = None,
     ) -> list[MemoryItem]:
         conn = self._require_conn()
         index = await self._ensure_index()
         query = np.asarray(embedding, dtype=np.float32)
-        scope_sql, scope_params = self._scope_sql(None)
+        scope_sql, scope_params = self._scope_sql(user_id)
         # Fetch extra to allow for filter/scope culling.
         raw = index.search(
             query, top_k=top_k * 3 if (filters or scope_sql) else top_k
@@ -670,6 +682,7 @@ class SQLiteStore(BaseStore):
         entity_key: str,
         attribute_key: str,
         status: MemoryStatus | None = MemoryStatus.ACTIVE,
+        user_id: str | None = None,
     ) -> list[MemoryItem]:
         """All memories occupying the same entity+attribute slot.
 
@@ -682,7 +695,7 @@ class SQLiteStore(BaseStore):
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
-        scope_sql, scope_params = self._scope_sql(None)
+        scope_sql, scope_params = self._scope_sql(user_id)
         if scope_sql:
             clauses.append(scope_sql)
             params.extend(scope_params)
@@ -697,6 +710,7 @@ class SQLiteStore(BaseStore):
         self,
         entity_key: str,
         status: MemoryStatus | None = MemoryStatus.ACTIVE,
+        user_id: str | None = None,
     ) -> list[MemoryItem]:
         """Current-family slots for one entity — the compositional hop."""
         conn = self._require_conn()
@@ -705,7 +719,7 @@ class SQLiteStore(BaseStore):
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
-        scope_sql, scope_params = self._scope_sql(None)
+        scope_sql, scope_params = self._scope_sql(user_id)
         if scope_sql:
             clauses.append(scope_sql)
             params.extend(scope_params)

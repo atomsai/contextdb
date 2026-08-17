@@ -8,6 +8,11 @@ nav:
   - Quick Start: quickstart.md
   - Architecture: architecture.md
   - API: api.md
+  - HTTP server: serve.md
+  - Multi-tenant: multi_tenant.md
+  - Postgres: postgres.md
+  - Trust policy: trust_policy.md
+  - SQLite migrations: migrations.md
 
 theme:
   name: material

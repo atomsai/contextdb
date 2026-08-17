@@ -45,6 +45,7 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.29", "pgvector>=0.2"]
+serve = ["starlette>=0.37", "uvicorn>=0.27"]
 faiss = ["faiss-cpu>=1.7"]
 local = ["sentence-transformers>=2.0"]
 neo4j = ["neo4j>=5.0"]
@@ -53,6 +54,8 @@ rl = ["torch>=2.0", "trl>=0.7"]
 all = [
     "asyncpg>=0.29",
     "pgvector>=0.2",
+    "starlette>=0.37",
+    "uvicorn>=0.27",
     "faiss-cpu>=1.7",
     "sentence-transformers>=2.0",
     "neo4j>=5.0",
@@ -66,6 +69,8 @@ dev = [
     "mypy>=1.8",
     "hypothesis>=6.0",
     "pre-commit>=3.0",
+    "starlette>=0.37",
+    "httpx>=0.27",
 ]
 
 [project.urls]
@@ -101,7 +106,16 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["faiss", "sentence_transformers", "mcp", "mcp.*"]
+module = [
+    "faiss",
+    "sentence_transformers",
+    "mcp",
+    "mcp.*",
+    "asyncpg",
+    "starlette",
+    "starlette.*",
+    "uvicorn",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

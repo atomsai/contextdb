@@ -23,7 +23,7 @@ from contextdb.privacy.injection import screen_injection
 if TYPE_CHECKING:
     from contextdb.graphs.base import BaseGraph
     from contextdb.graphs.semantic import SemanticGraph
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
     from contextdb.utils.llm import LLMProvider
 
 # Conservative merge order: the summary of a cluster may only be as
@@ -56,7 +56,7 @@ class Consolidator:
 
     def __init__(
         self,
-        store: SQLiteStore,
+        store: BaseStore,
         semantic_graph: SemanticGraph,
         llm: LLMProvider,
         summary_prompt: str | None = None,
@@ -145,7 +145,7 @@ class Pruner:
       ``max_neighbors`` (i.e., already well-represented).
     """
 
-    def __init__(self, store: SQLiteStore) -> None:
+    def __init__(self, store: BaseStore) -> None:
         self.store = store
 
     async def prune(self, strategy: str = "decay", **kwargs: Any) -> int:

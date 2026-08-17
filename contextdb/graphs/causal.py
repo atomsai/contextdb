@@ -15,7 +15,7 @@ from contextdb.core.models import Edge
 from contextdb.graphs.base import BaseGraph
 
 if TYPE_CHECKING:
-    from contextdb.store.sqlite_store import SQLiteStore
+    from contextdb.store.base import BaseStore
     from contextdb.utils.llm import LLMProvider
 
 _SCHEMA = """
@@ -69,7 +69,7 @@ class CausalGraph(BaseGraph):
 
     def __init__(
         self,
-        store: SQLiteStore,
+        store: BaseStore,
         llm: LLMProvider,
         confidence_threshold: float = 0.5,
         candidate_window: int = 10,

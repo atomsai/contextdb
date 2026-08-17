@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextdb.store.base import BaseStore
+from contextdb.store.factory import is_postgres_url, open_store
 from contextdb.store.sqlite_store import SQLiteStore
 from contextdb.store.vector_index import NumpyIndex, VectorIndex, get_vector_index
 
@@ -12,4 +13,6 @@ __all__ = [
     "SQLiteStore",
     "VectorIndex",
     "get_vector_index",
+    "is_postgres_url",
+    "open_store",
 ]
