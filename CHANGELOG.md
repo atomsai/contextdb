@@ -33,6 +33,8 @@ GitHub `main`: memory an agent can act on without treating a wish as a fact.
 - CI mypy on Python 3.12: type-check as the running interpreter so
   NumPy 2.5's PEP 695 `type` aliases parse. The 3.10 job still guards
   our runtime floor.
+- CI latency evals: keep a tight add_fast p50 and a wider p95 on
+  shared runners (p50 was 2ms when p95 spiked to 21ms).
 
 ## 0.1.1 — 2026-04-22
 
