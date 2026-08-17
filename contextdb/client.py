@@ -25,6 +25,7 @@ from contextdb.core.config import ContextDBConfig
 from contextdb.core.exceptions import ContextDBError
 from contextdb.core.models import EpistemicSource, MemoryItem, MemoryStatus, MemoryType
 from contextdb.dynamics.trust import TrustEngine, infer_action_relevant
+from contextdb.privacy.injection import screen_injection
 from contextdb.privacy.pii_detector import PIIDetector
 from contextdb.store.sqlite_store import SQLiteStore
 from contextdb.utils.embeddings import EmbeddingProvider, get_embedding_provider
@@ -238,6 +239,19 @@ class ContextDB:
     # Core CRUD / search
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _screen_item(item: MemoryItem) -> MemoryItem:
+        """Write-time injection screen (Epic 5).
+
+        Runs on every write path. Caller-supplied trust fields can never
+        clear the flag — screening only moves a memory toward less trust.
+        """
+        if not item.injection_suspect and screen_injection(item.content):
+            item.injection_suspect = True
+            item.epistemic_source = "third_party"
+            item.confidence = 0.0
+        return item
+
     async def add(
         self,
         content: str,
@@ -304,6 +318,7 @@ class ContextDB:
             attribute_key=attribute_key,
             valid_from=datetime.now(tz=timezone.utc),
         )
+        self._screen_item(item)
 
         if entity_key and attribute_key:
             stored, outcome = await self._trust.write(item, user_id=self.user_id)
@@ -417,6 +432,7 @@ class ContextDB:
             valid_from=now,
             pending_consolidation=True,
         )
+        self._screen_item(item)
         stored = await store.add(item)
         if self._audit is not None:
             await self._audit.log(
@@ -476,6 +492,7 @@ class ContextDB:
                     attribute_key=fact.get("attribute_key"),
                     metadata={"consolidated_from": [raw.id]},
                 )
+                self._screen_item(new_item)
                 saved, outcome = await self._trust.write(new_item, user_id=self.user_id)
                 if outcome in {"added", "superseded"}:
                     await self._link(saved.id)
@@ -584,6 +601,7 @@ class ContextDB:
         stored: list[MemoryItem] = []
         store = self._require_store()
         for item in items:
+            self._screen_item(item)
             if item.entity_key and item.attribute_key:
                 saved, outcome = await self._trust.write(item, user_id=self.user_id)
             else:
