@@ -26,6 +26,14 @@ FORBIDDEN_DIRS = (
     "contextdb/billing",
 )
 
+# Operator/bootstrap files and pre-release planning docs stay out of
+# the public Apache tree.
+FORBIDDEN_FILES = (
+    "scripts/setup-contextdb-cloud.sh",
+    "TASKS.md",
+    "PRD.md",
+)
+
 FORBIDDEN_IMPORT = re.compile(
     r"^\s*(?:from|import)\s+"
     r"(contextdb_cloud|contextdb\.cloud|contextdb\.entitlements|contextdb\.billing)\b",
@@ -50,6 +58,9 @@ FORBIDDEN_ARCHIVE_PARTS = (
     "/.env",
     ".env.",
     "secrets/",
+    "setup-contextdb-cloud.sh",
+    "TASKS.md",
+    "PRD.md",
 )
 
 FORBIDDEN_ARCHIVE_SUFFIXES = (".pem", ".p12", ".rtf", ".key")
@@ -91,6 +102,10 @@ def check_forbidden_paths() -> list[str]:
         path = ROOT / rel
         if path.exists():
             errors.append(f"premium/cloud path must not exist in the Apache tree: {rel}")
+    for rel in FORBIDDEN_FILES:
+        path = ROOT / rel
+        if path.exists():
+            errors.append(f"internal/bootstrap file must not exist in the Apache tree: {rel}")
     return errors
 
 

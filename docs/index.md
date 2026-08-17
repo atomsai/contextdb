@@ -50,4 +50,6 @@ prose and evals disagree, the evals win.
 
 Apache 2.0. Open-core: the SDK and trust evals stay public; hosted
 operations are a separate Cloud product. See [OPEN_CORE.md](../OPEN_CORE.md)
-and [COMMERCIAL.md](../COMMERCIAL.md). ContextDB is a trademark.
+and [COMMERCIAL.md](../COMMERCIAL.md). ContextDB is a trademark. A
+public credit line is optional; the preferred form is in
+[COMMERCIAL.md](../COMMERCIAL.md#attribution-optional).

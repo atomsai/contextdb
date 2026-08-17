@@ -1,7 +1,7 @@
-"""Acceptance evals for the ContextDB Trust Model PRD (EVAL-0.1 … EVAL-8.1).
+"""Acceptance evals for the ContextDB trust model (EVAL-0.1 … EVAL-8.1).
 
-These evals are the spec for the trust-model epics. Where the PRD prose and
-these evals disagree, the evals win.
+These evals are the spec. Where prose and these evals disagree, the
+evals win.
 
 Conventions:
 * Every eval uses the mock embedder (deterministic, network-free) and either

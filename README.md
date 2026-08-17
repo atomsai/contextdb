@@ -536,7 +536,9 @@ operations live in a private `contextdb-cloud` repo that depends on this
 package — this package never depends on cloud. Entitlements are
 server-side. See [OPEN_CORE.md](OPEN_CORE.md) and
 [COMMERCIAL.md](COMMERCIAL.md). **ContextDB** is a trademark; the Apache
-license is not a trademark license.
+license is not a trademark license. A public credit line is optional —
+if you want one, use **Built with ContextDB** linking to this
+repository. See [COMMERCIAL.md](COMMERCIAL.md#attribution-optional).
 
 ## Contributing
 

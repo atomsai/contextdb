@@ -26,3 +26,9 @@ def test_sdk_has_no_cloud_import() -> None:
         text = path.read_text(encoding="utf-8")
         assert "contextdb_cloud" not in text
         assert "contextdb.cloud" not in text
+
+
+def test_public_tree_has_no_cloud_bootstrap_or_planning_docs() -> None:
+    assert not (ROOT / "scripts" / "setup-contextdb-cloud.sh").exists()
+    assert not (ROOT / "TASKS.md").exists()
+    assert not (ROOT / "PRD.md").exists()

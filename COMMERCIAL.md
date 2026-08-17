@@ -63,6 +63,28 @@ You may not, without written permission:
 File notices and the [NOTICE](NOTICE) file exist so redistributors keep
 this distinction visible.
 
+## Attribution (optional)
+
+Apache-2.0 does **not** require a public credit line. Commercial use of
+this SDK does **not** require a link to Atoms AI, PyAI, or any other
+site.
+
+If you ship a product that uses ContextDB and you want to credit the
+project, the preferred form is a visible **Built with ContextDB** (or
+**Uses ContextDB**) link to the canonical project page:
+
+https://github.com/atomsai/contextdb
+
+That is a courtesy, not a license condition. Redistributors must still
+keep `LICENSE` and [NOTICE](NOTICE) as Apache requires.
+
+If you use the ContextDB name or logo, follow the trademark rules
+above. ContextDB Cloud customer contracts may require a credit line;
+that is a service term, not part of this license.
+
+Research citations should use the paper:
+https://zenodo.org/records/19647089
+
 ## Dual licensing
 
 Code published through `2554dae` is Apache-2.0 forever, including forks

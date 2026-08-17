@@ -33,7 +33,8 @@ boolean.
 ## Private — `contextdb-cloud`
 
 Not in this tree. Cloud depends on `pycontextdb`. The SDK does not
-import it.
+import it. Cloud source, bootstrap installers, and operator runbooks
+do not belong in this repository.
 
 - Hosted, multi-tenant runtime
 - Managed distributed storage and indexing
@@ -60,7 +61,8 @@ import it.
    `VerifyBeforeAct`, PII-before-embed, injection rendering, forget, and
    the evals that lock those behaviors are not paid features.
 5. **Trademark.** Apache-2.0 is a copyright and patent license, not a
-   trademark license. See [COMMERCIAL.md](COMMERCIAL.md) and [NOTICE](NOTICE).
+   trademark license. A public credit line is optional, not a condition
+   of commercial use. See [COMMERCIAL.md](COMMERCIAL.md) and [NOTICE](NOTICE).
 6. **Releases.** PyPI publishes only from a GitHub Release after package
    inspection and the `pypi` environment approval. See below.
 7. **CLA.** Substantial external contributions require a signed CLA so

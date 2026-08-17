@@ -136,6 +136,9 @@ exclude = [
     "cloud/",
     ".cursor/",
     "legal/signed/",
+    "scripts/setup-contextdb-cloud.sh",
+    "TASKS.md",
+    "PRD.md",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -157,4 +160,7 @@ exclude = [
     "cloud/",
     ".cursor/",
     "legal/signed/",
+    "scripts/setup-contextdb-cloud.sh",
+    "TASKS.md",
+    "PRD.md",
 ]
