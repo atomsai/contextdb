@@ -88,6 +88,18 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["user_id"],
         },
     },
+    {
+        "name": "confirm",
+        "description": (
+            "Graduate a memory after the user said yes. Closes the "
+            "verify-before-act loop: the fact then passes recall_for_action."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"memory_id": {"type": "string"}},
+            "required": ["memory_id"],
+        },
+    },
 ]
 
 
@@ -100,6 +112,8 @@ def _serialize(item: MemoryItem) -> dict[str, Any]:
         "corroboration_count": item.corroboration_count,
         "action_relevant": item.action_relevant,
         "requires_confirmation": item.requires_confirmation,
+        "confirmed": item.confirmed,
+        "independent_corroboration": item.independent_corroboration,
         "injection_suspect": item.injection_suspect,
         "valid_until": item.valid_until.isoformat() if item.valid_until else None,
     }
@@ -123,6 +137,8 @@ class ContextDBMCPServer:
             return await self._recall_for_action(arguments)
         if name == "forget":
             return await self._forget(arguments)
+        if name == "confirm":
+            return await self._confirm(arguments)
         raise ConfigError(f"Unknown MCP tool '{name}'.")
 
     async def _remember(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -157,6 +173,10 @@ class ContextDBMCPServer:
         deleted = await self.client.forget_user(user_id)
         verified = await self.client.verify_forgotten(user_id)
         return {"deleted": deleted, "verified": verified}
+
+    async def _confirm(self, args: dict[str, Any]) -> dict[str, Any]:
+        item = await self.client.factual.confirm(str(args["memory_id"]))
+        return {"memory": _serialize(item)}
 
 
 async def serve_stdio(client: ContextDB) -> None:

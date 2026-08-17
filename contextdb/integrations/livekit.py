@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from contextdb.integrations.act import VerifyBeforeAct
 from contextdb.integrations.prompting import render_recalled_context
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ class ContextDBLiveKitMemory:
         self.user_id = user_id
         self.top_k = top_k
         self.max_tokens = max_tokens
+        self.gate = VerifyBeforeAct(client, top_k=top_k, max_tokens=max_tokens)
 
     async def on_user_turn(self, text: str) -> MemoryItem | None:
         """Store a final user turn (LLM-free; safe inside a voice loop)."""
@@ -50,9 +52,9 @@ class ContextDBLiveKitMemory:
     async def pre_llm_hook(self, query: str, *, for_action: bool = False) -> str:
         """Budgeted, wrapper-demoted recall to inject before the LLM call."""
         if for_action:
-            items = await self.client.factual.recall_for_action(query, top_k=self.top_k)
-        else:
-            items = await self.client.factual.recall(query, top_k=self.top_k)
+            decision = await self.gate.decide(query)
+            return decision.context if decision.kind == "act" else ""
+        items = await self.client.factual.recall(query, top_k=self.top_k)
         return render_recalled_context(items, max_tokens=self.max_tokens)
 
     async def augment_messages(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from contextdb.client import ContextDB
+from contextdb.core.clock import Clock, FrozenClock, utc_now
 from contextdb.core.config import ContextDBConfig
 from contextdb.core.exceptions import (
     ConfigError,
@@ -23,16 +24,19 @@ from contextdb.core.models import (
     PIIType,
     RetentionPolicy,
 )
+from contextdb.core.policy import TrustPolicy
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "Clock",
     "ConfigError",
     "ContextDB",
     "ContextDBConfig",
     "ContextDBError",
     "Edge",
     "Entity",
+    "FrozenClock",
     "MemoryItem",
     "MemoryNotFoundError",
     "MemoryStatus",
@@ -42,14 +46,22 @@ __all__ = [
     "PrivacyError",
     "RetentionPolicy",
     "StorageError",
+    "TrustPolicy",
     "__version__",
     "init",
+    "utc_now",
 ]
 
 
 def init(
     user_id: str | None = None,
     config: ContextDBConfig | None = None,
+    *,
+    tenant_id: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    clock: Clock | None = None,
+    trust_policy: TrustPolicy | None = None,
     **kwargs: Any,
 ) -> ContextDB:
     """Create a :class:`ContextDB` client.
@@ -69,4 +81,12 @@ def init(
         A fully-configured :class:`ContextDB` client.
     """
     resolved = config or ContextDBConfig(**kwargs)
-    return ContextDB(resolved, user_id=user_id)
+    return ContextDB(
+        resolved,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        clock=clock,
+        trust_policy=trust_policy,
+    )

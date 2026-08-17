@@ -83,6 +83,15 @@ class ContextDBConfig(BaseSettings):
         default=730,
         description="Default retention horizon in days. None disables TTL enforcement.",
     )
+    relevance_floor: float = Field(
+        default=-1.0,
+        description=(
+            "Minimum cosine for a recall hit. -1 disables the floor. "
+            "0 is NOT off (it drops negative cosines). Production "
+            "embedders should use 0.15–0.25 — below that, top-1 "
+            "similarity is a guess, not a memory."
+        ),
+    )
     enable_salience: bool = Field(
         default=True,
         description=(

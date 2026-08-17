@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING
 
+import numpy as np
+
+from contextdb.core.clock import Clock, utc_now
 from contextdb.core.models import MemoryItem
 from contextdb.dynamics.salience import (
     DEFAULT_HALF_LIFE_DAYS,
@@ -41,6 +44,16 @@ _CAUSAL_MARKERS = re.compile(
     r"\b(why|because|caused|leads? to|due to|resulted? in|reason|so that)\b",
     re.IGNORECASE,
 )
+def _cosine(a: list[float], b: list[float]) -> float:
+    va = np.asarray(a, dtype=np.float32)
+    vb = np.asarray(b, dtype=np.float32)
+    na = float(np.linalg.norm(va))
+    nb = float(np.linalg.norm(vb))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return float(np.dot(va, vb) / (na * nb))
+
+
 _ENTITY_MARKERS = re.compile(
     r"\b(who|whose|which person|what company|what product)\b",
     re.IGNORECASE,
@@ -104,6 +117,7 @@ class ScoredMemory:
     age_days: float
     recurrence: float
     criticality_boost: float
+    cosine: float = 0.0
     per_graph: dict[str, int] = field(default_factory=dict)
 
 
@@ -118,6 +132,7 @@ class RetrievalEngine:
         fuser: RetrievalFuser,
         enable_salience: bool = True,
         salience_half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
+        clock: Clock = utc_now,
     ) -> None:
         self.store = store
         self.graphs = graphs
@@ -125,6 +140,7 @@ class RetrievalEngine:
         self.fuser = fuser
         self.enable_salience = enable_salience
         self.salience_half_life_days = salience_half_life_days
+        self.clock = clock
 
     async def search(
         self,
@@ -160,7 +176,11 @@ class RetrievalEngine:
             rankings[name] = sorted(expanded.items(), key=lambda kv: kv[1], reverse=True)
 
         fused = self.fuser.fuse(rankings, weights)
-        now = datetime.now(tz=timezone.utc)
+        now = self.clock()
+        seed_cosine = {
+            item.id: _cosine(query_embedding, item.embedding) if item.embedding else 0.0
+            for item in seed_items
+        }
 
         # Per-graph rank lookup for observability.
         per_graph_ranks: dict[str, dict[str, int]] = {
@@ -172,7 +192,9 @@ class RetrievalEngine:
             # No fusion signal (empty store or zero weights): rank the seeds
             # directly, still applying salience.
             return [
-                self._score(item, 1.0 / (rank + 1), per_graph_ranks, now)
+                self._score(
+                    item, 1.0 / (rank + 1), per_graph_ranks, now, seed_cosine.get(item.id, 0.0)
+                )
                 for rank, item in enumerate(seed_items[:top_k])
             ]
 
@@ -181,7 +203,9 @@ class RetrievalEngine:
             item = await self.store.get_raw(mid)
             if item is None:
                 continue
-            scored.append(self._score(item, rrf_score, per_graph_ranks, now))
+            scored.append(
+                self._score(item, rrf_score, per_graph_ranks, now, seed_cosine.get(mid, 0.0))
+            )
         scored.sort(key=lambda s: s.final_score, reverse=True)
         return scored[:top_k]
 
@@ -191,6 +215,7 @@ class RetrievalEngine:
         rrf_score: float,
         per_graph_ranks: dict[str, dict[str, int]],
         now: datetime,
+        cosine: float = 0.0,
     ) -> ScoredMemory:
         boost = criticality_boost(item)
         rec = recurrence(item)
@@ -208,6 +233,7 @@ class RetrievalEngine:
             age_days=age,
             recurrence=rec,
             criticality_boost=boost,
+            cosine=cosine,
             per_graph={
                 name: ranks[item.id]
                 for name, ranks in per_graph_ranks.items()

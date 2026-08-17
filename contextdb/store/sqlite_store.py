@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiosqlite
 import numpy as np
@@ -26,9 +27,6 @@ from contextdb.core.models import (
 )
 from contextdb.store.base import BaseStore
 from contextdb.store.vector_index import VectorIndex, get_vector_index
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -61,7 +59,18 @@ CREATE TABLE IF NOT EXISTS memories (
     valid_until TEXT,
     superseded_by TEXT,
     pending_consolidation INTEGER NOT NULL DEFAULT 0,
-    injection_suspect INTEGER NOT NULL DEFAULT 0
+    injection_suspect INTEGER NOT NULL DEFAULT 0,
+    corroborated_by TEXT DEFAULT '[]',
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    confirmed_at TEXT,
+    write_generation INTEGER NOT NULL DEFAULT 0,
+    slot_class TEXT,
+    slot_value TEXT,
+    negated INTEGER NOT NULL DEFAULT 0,
+    tenant_id TEXT,
+    agent_id TEXT,
+    session_id TEXT,
+    pii_shadow TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id);
@@ -70,6 +79,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_slot ON memories(entity_key, attribute_key);
 CREATE INDEX IF NOT EXISTS idx_memories_pending ON memories(pending_consolidation);
+CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
 """
 
 # Trust-model columns added after v0.1. Each entry: (column, DDL fragment).
@@ -101,6 +112,17 @@ _TRUST_COLUMNS: list[tuple[str, str]] = [
     ("superseded_by", "TEXT"),
     ("pending_consolidation", "INTEGER NOT NULL DEFAULT 0"),
     ("injection_suspect", "INTEGER NOT NULL DEFAULT 0"),
+    ("corroborated_by", "TEXT DEFAULT '[]'"),
+    ("confirmed", "INTEGER NOT NULL DEFAULT 0"),
+    ("confirmed_at", "TEXT"),
+    ("write_generation", "INTEGER NOT NULL DEFAULT 0"),
+    ("slot_class", "TEXT"),
+    ("slot_value", "TEXT"),
+    ("negated", "INTEGER NOT NULL DEFAULT 0"),
+    ("tenant_id", "TEXT"),
+    ("agent_id", "TEXT"),
+    ("session_id", "TEXT"),
+    ("pii_shadow", "TEXT"),
 ]
 
 
@@ -169,6 +191,17 @@ def _row_to_item(row: Mapping[str, Any]) -> MemoryItem:
         superseded_by=row.get("superseded_by"),
         pending_consolidation=bool(row.get("pending_consolidation") or 0),
         injection_suspect=bool(row.get("injection_suspect") or 0),
+        corroborated_by=json.loads(row.get("corroborated_by") or "[]"),
+        confirmed=bool(row.get("confirmed") or 0),
+        confirmed_at=_opt_datetime(row.get("confirmed_at")),
+        write_generation=int(row.get("write_generation") or 0),
+        slot_class=row.get("slot_class"),
+        slot_value=row.get("slot_value"),
+        negated=bool(row.get("negated") or 0),
+        tenant_id=row.get("tenant_id"),
+        agent_id=row.get("agent_id"),
+        session_id=row.get("session_id"),
+        pii_shadow=row.get("pii_shadow"),
     )
 
 
@@ -186,16 +219,24 @@ class SQLiteStore(BaseStore):
         self,
         storage_url: str = "sqlite:///contextdb.db",
         user_id: str | None = None,
+        tenant_id: str | None = None,
+        agent_id: str | None = None,
         vector_index: VectorIndex | None = None,
         embedding_dim: int = 1536,
     ) -> None:
         self._path = _parse_storage_url(storage_url)
         self._user_id = user_id
+        self._tenant_id = tenant_id
+        self._agent_id = agent_id
         self._conn: aiosqlite.Connection | None = None
         self._index: VectorIndex | None = vector_index
         self._embedding_dim = embedding_dim
         self._index_loaded = False
         self._write_lock: asyncio.Lock = asyncio.Lock()
+        # Per-slot locks: two concurrent corrections into the same slot
+        # must not both read the old occupant and both write.
+        self._slot_locks: dict[tuple[str, ...], asyncio.Lock] = {}
+        self._slot_locks_guard = asyncio.Lock()
 
     async def initialize(self) -> None:
         if self._conn is not None:
@@ -243,8 +284,44 @@ class SQLiteStore(BaseStore):
             return self._user_id
         return user_id
 
-    def _scope_allows(self, row_user_id: str | None) -> bool:
-        return self._user_id is None or row_user_id == self._user_id
+    def _scope_allows(self, row: Any) -> bool:
+        return (
+            (self._user_id is None or row["user_id"] == self._user_id)
+            and (self._tenant_id is None or row["tenant_id"] == self._tenant_id)
+            and (self._agent_id is None or row["agent_id"] == self._agent_id)
+        )
+
+    def _scope_sql(self, user_id: str | None = None) -> tuple[str, list[Any]]:
+        """AND-joined visibility predicates + bind params."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        scope = self._resolve_scope(user_id)
+        if scope is not None:
+            clauses.append("user_id = ?")
+            params.append(scope)
+        if self._tenant_id is not None:
+            clauses.append("tenant_id = ?")
+            params.append(self._tenant_id)
+        if self._agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(self._agent_id)
+        return " AND ".join(clauses), params
+
+    async def slot_lock(self, entity_key: str, attribute_key: str) -> asyncio.Lock:
+        """Lock keyed on (user, tenant, entity, attribute) — not the row.
+
+        Two concurrent "actually 4pm" / "actually 5pm" writes into the
+        same slot must serialize. Postgres hosts should take
+        ``SELECT … FOR UPDATE`` on this key; SQLite serializes via this
+        in-process lock plus the global write lock.
+        """
+        key = (self._user_id or "", self._tenant_id or "", entity_key, attribute_key)
+        async with self._slot_locks_guard:
+            lock = self._slot_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._slot_locks[key] = lock
+            return lock
 
     async def _ensure_index(self) -> VectorIndex:
         if self._index is None:
@@ -279,8 +356,15 @@ class SQLiteStore(BaseStore):
                     confidence, status, entity_mentions, tags,
                     epistemic_source, corroboration_count, action_relevant,
                     entity_key, attribute_key, valid_from, valid_until,
-                    superseded_by, pending_consolidation, injection_suspect
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    superseded_by, pending_consolidation, injection_suspect,
+                    corroborated_by, confirmed, confirmed_at, write_generation,
+                    slot_class, slot_value, negated, tenant_id, agent_id,
+                    session_id, pii_shadow
+                ) VALUES (
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                    ?
+                )
                 """,
                 (
                     item.id,
@@ -313,6 +397,17 @@ class SQLiteStore(BaseStore):
                     item.superseded_by,
                     int(item.pending_consolidation),
                     int(item.injection_suspect),
+                    json.dumps(item.corroborated_by),
+                    int(item.confirmed),
+                    item.confirmed_at.isoformat() if item.confirmed_at else None,
+                    item.write_generation,
+                    item.slot_class,
+                    item.slot_value,
+                    int(item.negated),
+                    item.tenant_id or self._tenant_id,
+                    item.agent_id or self._agent_id,
+                    item.session_id,
+                    item.pii_shadow,
                 ),
             )
             await conn.commit()
@@ -325,7 +420,7 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         cursor = await conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
         row = await cursor.fetchone()
-        if row is None or not self._scope_allows(row["user_id"]):
+        if row is None or not self._scope_allows(row):
             return None
         item = _row_to_item(dict(row))
         now_iso = datetime.now(tz=item.ingestion_time.tzinfo).isoformat()
@@ -366,6 +461,17 @@ class SQLiteStore(BaseStore):
             "superseded_by",
             "pending_consolidation",
             "injection_suspect",
+            "corroborated_by",
+            "confirmed",
+            "confirmed_at",
+            "write_generation",
+            "slot_class",
+            "slot_value",
+            "negated",
+            "tenant_id",
+            "agent_id",
+            "session_id",
+            "pii_shadow",
         }
         unknown = set(kwargs) - allowed
         if unknown:
@@ -400,9 +506,21 @@ class SQLiteStore(BaseStore):
             elif k in {"event_time", "last_accessed", "valid_from", "valid_until"}:
                 sets.append(f"{k} = ?")
                 params.append(v.isoformat() if isinstance(v, datetime) else v)
-            elif k in {"action_relevant", "pending_consolidation", "injection_suspect"}:
+            elif k in {
+                "action_relevant",
+                "pending_consolidation",
+                "injection_suspect",
+                "confirmed",
+                "negated",
+            }:
                 sets.append(f"{k} = ?")
                 params.append(int(bool(v)))
+            elif k == "corroborated_by":
+                sets.append("corroborated_by = ?")
+                params.append(json.dumps(v))
+            elif k == "confirmed_at":
+                sets.append("confirmed_at = ?")
+                params.append(v.isoformat() if isinstance(v, datetime) else v)
             else:
                 sets.append(f"{k} = ?")
                 params.append(v)
@@ -436,7 +554,7 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         cursor = await conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
         row = await cursor.fetchone()
-        if row is None or not self._scope_allows(row["user_id"]):
+        if row is None or not self._scope_allows(row):
             return None
         return _row_to_item(dict(row))
 
@@ -445,10 +563,11 @@ class SQLiteStore(BaseStore):
         callers must not audit-log a deletion that did not happen."""
         conn = self._require_conn()
         cursor = await conn.execute(
-            "SELECT user_id FROM memories WHERE id = ?", (memory_id,)
+            "SELECT user_id, tenant_id, agent_id FROM memories WHERE id = ?",
+            (memory_id,),
         )
         row = await cursor.fetchone()
-        if row is None or not self._scope_allows(row["user_id"]):
+        if row is None or not self._scope_allows(row):
             return False
         async with self._write_lock:
             if hard:
@@ -473,9 +592,11 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         index = await self._ensure_index()
         query = np.asarray(embedding, dtype=np.float32)
-        scope = self._resolve_scope(None)
+        scope_sql, scope_params = self._scope_sql(None)
         # Fetch extra to allow for filter/scope culling.
-        raw = index.search(query, top_k=top_k * 3 if (filters or scope) else top_k)
+        raw = index.search(
+            query, top_k=top_k * 3 if (filters or scope_sql) else top_k
+        )
         if not raw:
             return []
 
@@ -483,9 +604,9 @@ class SQLiteStore(BaseStore):
         placeholders = ",".join(["?"] * len(ids))
         sql = f"SELECT * FROM memories WHERE id IN ({placeholders})"
         params: list[Any] = list(ids)
-        if scope is not None:
-            sql += " AND user_id = ?"
-            params.append(scope)
+        if scope_sql:
+            sql += f" AND {scope_sql}"
+            params.extend(scope_params)
         cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         items_by_id = {row["id"]: _row_to_item(dict(row)) for row in rows}
@@ -521,10 +642,10 @@ class SQLiteStore(BaseStore):
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
-        scope = self._resolve_scope(user_id)
-        if scope is not None:
-            clauses.append("user_id = ?")
-            params.append(scope)
+        scope_sql, scope_params = self._scope_sql(user_id)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
         if memory_type is not None:
             clauses.append("memory_type = ?")
             params.append(memory_type.value)
@@ -555,10 +676,10 @@ class SQLiteStore(BaseStore):
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
-        scope = self._resolve_scope(None)
-        if scope is not None:
-            clauses.append("user_id = ?")
-            params.append(scope)
+        scope_sql, scope_params = self._scope_sql(None)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
         cursor = await conn.execute(
             f"SELECT * FROM memories WHERE {' AND '.join(clauses)}",
             params,
@@ -574,10 +695,10 @@ class SQLiteStore(BaseStore):
             "AND status = 'ACTIVE'"
         )
         params: list[Any] = []
-        scope = self._resolve_scope(None)
-        if scope is not None:
-            sql += " AND user_id = ?"
-            params.append(scope)
+        scope_sql, scope_params = self._scope_sql(None)
+        if scope_sql:
+            sql += f" AND {scope_sql}"
+            params.extend(scope_params)
         sql += " ORDER BY created_at ASC LIMIT ?"
         params.append(limit)
         cursor = await conn.execute(sql, params)
@@ -586,29 +707,26 @@ class SQLiteStore(BaseStore):
 
     async def count(self, user_id: str | None = None) -> int:
         conn = self._require_conn()
-        scope = self._resolve_scope(user_id)
-        if scope is None:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE status = 'ACTIVE'"
-            )
-        else:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE status = 'ACTIVE' AND user_id = ?",
-                (scope,),
-            )
+        sql = "SELECT COUNT(*) FROM memories WHERE status = 'ACTIVE'"
+        params: list[Any] = []
+        scope_sql, scope_params = self._scope_sql(user_id)
+        if scope_sql:
+            sql += f" AND {scope_sql}"
+            params.extend(scope_params)
+        cursor = await conn.execute(sql, params)
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
     async def count_any_status(self, user_id: str) -> int:
         """Rows for a user across ALL lifecycle states — forgetting residue."""
         conn = self._require_conn()
-        scope = self._resolve_scope(user_id)
-        if scope is None:
-            cursor = await conn.execute("SELECT COUNT(*) FROM memories")
-        else:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE user_id = ?", (scope,)
-            )
+        sql = "SELECT COUNT(*) FROM memories"
+        params: list[Any] = []
+        scope_sql, scope_params = self._scope_sql(user_id)
+        if scope_sql:
+            sql += f" WHERE {scope_sql}"
+            params.extend(scope_params)
+        cursor = await conn.execute(sql, params)
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
 
@@ -625,10 +743,10 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         params: list[Any] = []
         sql = "SELECT memory_type, COUNT(*) FROM memories WHERE status = 'ACTIVE'"
-        scope = self._resolve_scope(user_id)
-        if scope is not None:
-            sql += " AND user_id = ?"
-            params.append(scope)
+        scope_sql, scope_params = self._scope_sql(user_id)
+        if scope_sql:
+            sql += f" AND {scope_sql}"
+            params.extend(scope_params)
         sql += " GROUP BY memory_type"
         cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
@@ -680,10 +798,10 @@ class SQLiteStore(BaseStore):
         conn = self._require_conn()
         params: list[Any] = [iso_cutoff]
         where = "created_at < ?"
-        scope = self._resolve_scope(user_id)
-        if scope is not None:
-            where += " AND user_id = ?"
-            params.append(scope)
+        scope_sql, scope_params = self._scope_sql(user_id)
+        if scope_sql:
+            where += f" AND {scope_sql}"
+            params.extend(scope_params)
         async with self._write_lock:
             if hard:
                 cursor = await conn.execute(

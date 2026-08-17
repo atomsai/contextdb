@@ -103,14 +103,17 @@ class FactualMemory:
     ) -> list[MemoryItem]:
         """Recall only facts an agent may act on without confirming first.
 
-        Filter: ``action_relevant`` AND NOT ``requires_confirmation`` —
-        i.e. corroborated (count >= 2) or first-party user_stated at
-        sufficient confidence. Wishes, hearsay, and low-confidence
-        inferences are excluded until corroborated.
+        Uses the client's :class:`TrustPolicy`. Wishes, hearsay,
+        unconfirmed low-confidence inferences, and unknown-slot
+        action facts are excluded until corroborated or confirmed.
         """
+        policy = self.client.trust_policy
         candidates = await self.recall(query, top_k=top_k * 4, as_of=as_of)
-        trusted = [m for m in candidates if m.action_trusted]
-        return trusted[:top_k]
+        return [m for m in candidates if policy.is_trusted(m)][:top_k]
+
+    async def confirm(self, memory_id: str) -> MemoryItem:
+        """Graduate a fact after the user said yes. Closes the verify loop."""
+        return await self.client.confirm(memory_id)
 
     async def update_fact(
         self,

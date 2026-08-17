@@ -18,10 +18,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, computed_field
+
+if TYPE_CHECKING:
+    from contextdb.core.policy import TrustPolicy
 
 GraphType = Literal["semantic", "temporal", "causal", "entity"]
 
@@ -243,32 +246,84 @@ class MemoryItem(BaseModel):
         default=False,
         description="Write-time screening flagged instruction-shaped content.",
     )
+    corroborated_by: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Distinct speaker/session ids that independently restated this "
+            "value. Length is the independent-corroboration count; repeats "
+            "from the same speaker do not graduate a fact."
+        ),
+    )
+    confirmed: bool = Field(
+        default=False,
+        description="Explicit user confirmation via factual.confirm().",
+    )
+    confirmed_at: datetime | None = Field(
+        default=None,
+        description="When the fact was explicitly confirmed, if ever.",
+    )
+    write_generation: int = Field(
+        default=0,
+        description=(
+            "Monotonic per-slot generation. A pending raw must not "
+            "supersede a typed fact with a higher generation."
+        ),
+    )
+    slot_class: str | None = Field(
+        default=None,
+        description="Action class from the versioned slot vocabulary (health, booking, ...).",
+    )
+    slot_value: str | None = Field(
+        default=None,
+        description="Canonical value inside the slot (e.g. 'thursday', '4:00pm').",
+    )
+    negated: bool = Field(
+        default=False,
+        description="True when the utterance denies the slot value.",
+    )
+    tenant_id: str | None = Field(default=None)
+    agent_id: str | None = Field(default=None)
+    session_id: str | None = Field(default=None)
+    pii_shadow: str | None = Field(
+        default=None,
+        description=(
+            "Typed stand-in embedded alongside redacted content so a query "
+            "containing a real email can still retrieve '[EMAIL]'."
+        ),
+    )
+
+    @property
+    def independent_corroboration(self) -> int:
+        """Distinct speakers, falling back to the raw count for pre-migration rows."""
+        if self.corroborated_by:
+            return len(self.corroborated_by)
+        return self.corroboration_count
+
+    def requires_confirmation_under(self, policy: TrustPolicy) -> bool:
+        return policy.requires_confirmation(self)
+
+    def action_trusted_under(self, policy: TrustPolicy) -> bool:
+        return policy.is_trusted(self)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def requires_confirmation(self) -> bool:
-        """Whether an agent must confirm with the user before acting on this.
+        """Default-policy view — kept so existing callers and evals stay valid.
 
-        Only action-gating facts can require confirmation. A fact is trusted
-        outright when it is corroborated (count >= 2) or first-party
-        (``user_stated``) at or above :data:`ACTION_CONFIDENCE_THRESHOLD`.
-        Wishes are extracted at confidence 0.5, so an uncorroborated wish
-        always requires confirmation — that is the fabrication fix.
+        Prefer :meth:`requires_confirmation_under` when a custom
+        :class:`TrustPolicy` is in play.
         """
-        if not self.action_relevant:
-            return False
-        if self.corroboration_count >= ACTION_CORROBORATION_THRESHOLD:
-            return False
-        return not (
-            self.epistemic_source == "user_stated"
-            and self.confidence >= ACTION_CONFIDENCE_THRESHOLD
-        )
+        from contextdb.core.policy import DEFAULT_TRUST_POLICY
+
+        return DEFAULT_TRUST_POLICY.requires_confirmation(self)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def action_trusted(self) -> bool:
-        """Whether this fact may gate an action without confirmation."""
-        return self.action_relevant and not self.requires_confirmation
+        """Whether this fact may gate an action under the default policy."""
+        from contextdb.core.policy import DEFAULT_TRUST_POLICY
+
+        return DEFAULT_TRUST_POLICY.is_trusted(self)
 
     def is_valid_at(self, moment: datetime) -> bool:
         """Temporal validity check (Epic 2). ``valid_until`` is exclusive."""

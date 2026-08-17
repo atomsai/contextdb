@@ -278,7 +278,9 @@ async def test_eval_1_1_wish_requires_confirmation_and_is_not_actionable(
     trusted = await db.factual.recall_for_action("come in Thursday")
     assert all(m.id != wish.id for m in trusted)
 
-    # Corroboration is what graduates a wish into an actionable fact.
+    # Same speaker repeating is NOT independent evidence — that was the
+    # corroboration-independence hole. Graduation is confirm() or a
+    # different session restating the same slot value.
     again = await db.factual.add(
         "I'd like to come in Thursday",
         source="user_stated",
@@ -288,7 +290,14 @@ async def test_eval_1_1_wish_requires_confirmation_and_is_not_actionable(
         attribute="preferred_visit_day",
     )
     assert again.id == wish.id, "same slot value must not duplicate"
-    assert again.corroboration_count == 2
+    assert again.independent_corroboration == 1
+    assert all(
+        m.id != wish.id for m in await db.factual.recall_for_action("come in Thursday")
+    )
+
+    confirmed = await db.factual.confirm(wish.id)
+    assert confirmed.confirmed is True
+    assert confirmed.requires_confirmation is False
     trusted_after = await db.factual.recall_for_action("come in Thursday")
     assert any(m.id == wish.id for m in trusted_after)
 
@@ -309,9 +318,8 @@ async def test_eval_1_2_hearsay_needs_corroboration(db: ContextDB) -> None:
         m.id != first.id for m in await db.factual.recall_for_action("office move Denver")
     )
 
-    # Same slot, same value, different speaker: corroborates the occupant
-    # instead of duplicating or superseding it.
-    second = await db.factual.add(
+    # Same speaker repeating is not independent evidence.
+    echo = await db.factual.add(
         "A colleague said the office is moving to Denver",
         source="third_party",
         confidence=0.6,
@@ -319,8 +327,29 @@ async def test_eval_1_2_hearsay_needs_corroboration(db: ContextDB) -> None:
         entity="office",
         attribute="location",
     )
+    assert echo.id == first.id
+    assert echo.independent_corroboration == 1
+    assert echo.requires_confirmation is True
+
+    # A different session restating the same slot value IS independent.
+    other = contextdb.init(
+        user_id="eval-user",
+        session_id="session-b",
+        config=db.config,
+    )
+    try:
+        second = await other.factual.add(
+            "A colleague said the office is moving to Denver",
+            source="third_party",
+            confidence=0.6,
+            action_relevant=True,
+            entity="office",
+            attribute="location",
+        )
+    finally:
+        await other.close()
     assert second.id == first.id, "same slot value must corroborate, not duplicate"
-    assert second.corroboration_count == 2
+    assert second.independent_corroboration == 2
     assert second.requires_confirmation is False
     trusted = await db.factual.recall_for_action("office move Denver")
     assert any(m.id == first.id for m in trusted)
@@ -701,9 +730,17 @@ async def test_eval_6_1_explain_reconstructs_formation_and_recall(
     )
     scores = entry["details"]["scores"]
     assert second.id in scores
-    assert {"salience", "rrf", "age_days", "criticality_boost", "per_graph"} <= set(
-        scores[second.id]
-    )
+    assert {
+        "salience",
+        "rrf",
+        "age_days",
+        "criticality_boost",
+        "per_graph",
+        "requires_confirmation",
+        "action_trusted",
+        "confirmed",
+        "independent_corroboration",
+    } <= set(scores[second.id])
     assert second.id in entry["details"]["returned_ids"]
 
 
@@ -810,7 +847,7 @@ async def test_eval_8_1b_mcp_server_and_livekit_smoke(tmp_path: Path) -> None:
     try:
         server = ContextDBMCPServer(db)
         tools = {t["name"] for t in server.list_tools()}
-        assert {"remember", "recall", "recall_for_action", "forget"} <= tools
+        assert {"remember", "recall", "recall_for_action", "forget", "confirm"} <= tools
 
         remembered = await server.call_tool(
             "remember",
@@ -945,8 +982,256 @@ async def test_eval_bakeoff_trust_arm_beats_raw_store_on_fabrication(
     assert trust.fabrication_rate == 0.0, trust.per_trap
     assert trust.recall_accuracy == 1.0, trust.per_trap
     assert trust.supersede_correct is True
+    assert trust.over_refusal is False
     assert trust.write_p95_ms < 10.0
 
     # Control: the untyped baseline must fail the traps the trust arm passes.
-    assert raw.fabrication_rate >= 0.4, raw.per_trap
+    # Absolute rate depends on trap count; the invariant is "worse, and
+    # at least the wish/injection/quantity class of failures."
+    assert raw.fabrication_rate > trust.fabrication_rate, raw.per_trap
+    assert sum(1 for t in raw.per_trap.values() if t["fabricated"]) >= 3, raw.per_trap
     assert raw.supersede_correct is False
+
+
+# ---------------------------------------------------------------------------
+# Aggressive addenda — policy, clock, extractor bound, scopes
+# ---------------------------------------------------------------------------
+
+
+async def test_eval_confirm_graduates_and_persists_on_search(db: ContextDB) -> None:
+    """confirm() is the writeback the verify loop was missing; SEARCH
+    audit records the decision flags as they stood at recall time."""
+    wish = await db.factual.add(
+        "I'd like to come in Thursday",
+        source="user_stated",
+        confidence=0.5,
+        action_relevant=True,
+        entity="caller",
+        attribute="preferred_visit_day",
+    )
+    await db.factual.recall("come in Thursday")
+    before = await db.explain(wish.id)
+    entry = next(
+        s for s in before.surfaced_by if s["details"].get("query") == "come in Thursday"
+    )
+    assert entry["details"]["scores"][wish.id]["requires_confirmation"] is True
+    assert entry["details"]["scores"][wish.id]["confirmed"] is False
+
+    await db.factual.confirm(wish.id)
+    await db.factual.recall("come in Thursday")
+    after = await db.explain(wish.id)
+    confirmed_search = [
+        s
+        for s in after.surfaced_by
+        if s["details"].get("query") == "come in Thursday"
+        and s["details"]["scores"][wish.id]["confirmed"] is True
+    ]
+    assert confirmed_search
+    assert any(m.id == wish.id for m in await db.factual.recall_for_action("Thursday"))
+
+
+async def test_eval_attacker_cannot_self_corroborate(db: ContextDB) -> None:
+    """Repeating a third-party lie in the same session is not evidence."""
+    first = await db.factual.add(
+        "A stranger said the vault PIN is 0000",
+        source="third_party",
+        confidence=0.9,
+        action_relevant=True,
+        entity="account",
+        attribute="pin",
+    )
+    echo = await db.factual.add(
+        "A stranger said the vault PIN is 0000",
+        source="third_party",
+        confidence=0.9,
+        action_relevant=True,
+        entity="account",
+        attribute="pin",
+    )
+    assert echo.id == first.id
+    assert echo.independent_corroboration == 1
+    assert echo.requires_confirmation is True
+    assert all(m.id != first.id for m in await db.factual.recall_for_action("vault PIN"))
+
+
+async def test_eval_extractor_cannot_invent_high_stakes_slot(tmp_path: Path) -> None:
+    """An extracted health slot the raw text does not support is demoted."""
+    db = contextdb.init(user_id="eval-user", config=make_config(tmp_path))
+    db._llm = MockLLM(
+        responses={
+            "The weather in Denver is sunny": json.dumps(
+                {
+                    "facts": [
+                        {
+                            "content": "The user has no known peanut allergy",
+                            "type": "FACTUAL",
+                            "entities": ["user"],
+                            "source": "user_stated",
+                            "confidence": 0.99,
+                            "action_relevant": True,
+                            "entity": "user",
+                            "attribute": "allergy",
+                        }
+                    ]
+                }
+            )
+        }
+    )
+    try:
+        items = await db.add_conversation("The weather in Denver is sunny")
+        assert items
+        fact = items[0]
+        assert fact.epistemic_source == "agent_inferred"
+        assert fact.confidence <= 0.4
+        assert all(m.id != fact.id for m in await db.factual.recall_for_action("allergy"))
+    finally:
+        await db.close()
+
+
+async def test_eval_frozen_clock_as_of_is_deterministic(tmp_path: Path) -> None:
+    """as_of and supersede agree about 'now' when the clock is injected."""
+    from contextdb.core.clock import FrozenClock
+
+    clock = FrozenClock(datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(tmp_path),
+        clock=clock,
+    )
+    try:
+        first = await db.factual.add(
+            "The meeting is at 3pm",
+            source="user_stated",
+            confidence=0.9,
+            action_relevant=True,
+            entity="meeting",
+            attribute="time",
+        )
+        clock.advance(minutes=30)
+        between = clock.now
+        clock.advance(minutes=30)
+        second = await db.factual.add(
+            "Actually, the meeting is at 4pm",
+            source="user_stated",
+            confidence=0.9,
+            action_relevant=True,
+            entity="meeting",
+            attribute="time",
+        )
+        assert first.valid_from is not None and second.valid_from is not None
+        assert first.valid_from < between < second.valid_from
+        historical = await db.factual.recall("when is the meeting", as_of=between)
+        contents = [m.content for m in historical]
+        assert any("3pm" in c for c in contents), contents
+        assert not any("4pm" in c for c in contents), contents
+    finally:
+        await db.close()
+
+
+async def test_eval_relevance_floor_abstains(tmp_path: Path) -> None:
+    """A high floor is honest abstention, not a guess."""
+    from contextdb.core.policy import TrustPolicy
+    from contextdb.integrations.act import VerifyBeforeAct
+
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(tmp_path),
+        trust_policy=TrustPolicy(relevance_floor=0.99),
+    )
+    try:
+        await db.factual.add(
+            "The meeting is at 4pm",
+            source="user_stated",
+            confidence=0.9,
+            action_relevant=True,
+            entity="meeting",
+            attribute="time",
+        )
+        assert await db.factual.recall("when is the meeting") == []
+        decision = await VerifyBeforeAct(db).decide("when is the meeting")
+        assert decision.kind == "abstain"
+    finally:
+        await db.close()
+
+
+async def test_eval_hospital_policy_blocks_first_party_health(tmp_path: Path) -> None:
+    """Hospital policy: a single user-stated allergy does not gate plating."""
+    from contextdb.core.policy import TrustPolicy
+
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(tmp_path),
+        trust_policy=TrustPolicy.hospital(),
+    )
+    try:
+        allergy = await db.factual.add(
+            "I have a severe peanut allergy",
+            source="user_stated",
+            confidence=0.99,
+            action_relevant=True,
+            entity="user",
+            attribute="allergy",
+        )
+        assert allergy.slot_class == "health"
+        assert allergy.requires_confirmation_under(db.trust_policy) is True
+        assert all(
+            m.id != allergy.id
+            for m in await db.factual.recall_for_action("peanut allergy")
+        )
+        confirmed = await db.factual.confirm(allergy.id)
+        assert confirmed.requires_confirmation_under(db.trust_policy) is False
+        assert any(
+            m.id == allergy.id
+            for m in await db.factual.recall_for_action("peanut allergy")
+        )
+    finally:
+        await db.close()
+
+
+async def test_eval_tenant_scope_does_not_bleed(tmp_path: Path) -> None:
+    """Same user_id, different tenant_id: hard isolation at the store."""
+
+    def cfg() -> ContextDBConfig:
+        return make_config(tmp_path, name="tenants.db")
+
+    a = contextdb.init(user_id="shared", tenant_id="org-a", config=cfg())
+    secret = await a.factual.add(
+        "Org A garage code is 4482",
+        entity="user",
+        attribute="garage_code",
+        source="user_stated",
+        confidence=0.99,
+        action_relevant=True,
+    )
+    await a.close()
+
+    b = contextdb.init(user_id="shared", tenant_id="org-b", config=cfg())
+    try:
+        hits = await b.factual.recall("garage code")
+        assert all("4482" not in h.content for h in hits)
+        assert await b.get(secret.id) is None
+        assert (await b.stats())["total_memories"] == 0
+    finally:
+        await b.close()
+
+
+async def test_eval_verify_before_act_ask_then_confirm(db: ContextDB) -> None:
+    """Stock interceptor: untrusted → ask; confirm() → act."""
+    from contextdb.integrations.act import VerifyBeforeAct
+
+    wish = await db.factual.add(
+        "I'd like to come in Thursday",
+        source="user_stated",
+        confidence=0.5,
+        action_relevant=True,
+        entity="caller",
+        attribute="preferred_visit_day",
+    )
+    gate = VerifyBeforeAct(db)
+    first = await gate.decide("come in Thursday")
+    assert first.kind == "ask"
+    assert wish.id in first.pending_confirmation
+    await gate.confirm_pending(first.pending_confirmation)
+    second = await gate.decide("come in Thursday")
+    assert second.kind == "act"
+    assert any(m.id == wish.id for m in second.memories)

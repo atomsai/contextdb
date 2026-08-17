@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from contextdb.integrations.act import VerifyBeforeAct
 from contextdb.integrations.prompting import render_recalled_context
 
 if TYPE_CHECKING:
@@ -52,6 +53,7 @@ class ContextDBPipecatProcessor:
         self.top_k = top_k
         self.max_tokens = max_tokens
         self.store_agent_turns = store_agent_turns
+        self.gate = VerifyBeforeAct(client, top_k=top_k, max_tokens=max_tokens)
 
     async def handle_final_transcript(
         self, text: str, role: str = "user"
@@ -73,9 +75,10 @@ class ContextDBPipecatProcessor:
         confirming first (Epic 1 trust bar).
         """
         if for_action:
-            items = await self.client.factual.recall_for_action(query, top_k=self.top_k)
-        else:
-            items = await self.client.factual.recall(query, top_k=self.top_k)
+            decision = await self.gate.decide(query)
+            # Untrusted facts never reach an action-shaped prompt.
+            return decision.context if decision.kind == "act" else ""
+        items = await self.client.factual.recall(query, top_k=self.top_k)
         return render_recalled_context(items, max_tokens=self.max_tokens)
 
     async def augment_messages(

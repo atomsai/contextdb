@@ -22,6 +22,7 @@ import warnings
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from contextdb.core.clock import Clock, utc_now
 from contextdb.core.config import ContextDBConfig
 from contextdb.core.exceptions import ContextDBError
 from contextdb.core.models import (
@@ -31,7 +32,9 @@ from contextdb.core.models import (
     MemoryStatus,
     MemoryType,
 )
-from contextdb.dynamics.trust import TrustEngine, infer_action_relevant
+from contextdb.core.policy import TrustPolicy
+from contextdb.core.slots import canonicalize_slot, infer_negation, infer_slot
+from contextdb.dynamics.trust import TrustEngine, infer_action_relevant, speaker_id
 from contextdb.privacy.injection import screen_injection
 from contextdb.privacy.pii_detector import PIIDetector
 from contextdb.store.sqlite_store import SQLiteStore
@@ -57,9 +60,27 @@ if TYPE_CHECKING:
 class ContextDB:
     """Memory operating system for AI agents — the user-facing interface."""
 
-    def __init__(self, config: ContextDBConfig, user_id: str | None = None) -> None:
+    def __init__(
+        self,
+        config: ContextDBConfig,
+        user_id: str | None = None,
+        *,
+        tenant_id: str | None = None,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        clock: Clock | None = None,
+        trust_policy: TrustPolicy | None = None,
+    ) -> None:
         self.config = config
         self.user_id = user_id
+        self.tenant_id = tenant_id
+        self.agent_id = agent_id
+        self.session_id = session_id
+        self.clock: Clock = clock or utc_now
+        # Honour config.relevance_floor when the caller did not pass a policy.
+        self.trust_policy = trust_policy or TrustPolicy(
+            relevance_floor=config.relevance_floor
+        )
         self._store: SQLiteStore | None = None
         self._embedder: EmbeddingProvider | None = None
         self._llm: LLMProvider | None = None
@@ -122,6 +143,8 @@ class ContextDB:
         self._store = SQLiteStore(
             storage_url=self.config.storage_url,
             user_id=self.user_id,
+            tenant_id=self.tenant_id,
+            agent_id=self.agent_id,
             embedding_dim=dim,
         )
         await self._store.initialize()
@@ -185,6 +208,7 @@ class ContextDB:
             RetrievalFuser(),
             enable_salience=self.config.enable_salience,
             salience_half_life_days=self.config.salience_half_life_days,
+            clock=self.clock,
         )
         self._formation = FormationPipeline(
             Segmenter(),
@@ -208,7 +232,7 @@ class ContextDB:
             await self._audit.initialize()
 
         # Trust write path (Epics 1-2): slot dedupe, corroboration, supersede.
-        self._trust = TrustEngine(self._store, self._audit)
+        self._trust = TrustEngine(self._store, self._audit, clock=self.clock)
 
         from contextdb.core.models import RetentionPolicy
         from contextdb.privacy.retention import RetentionManager
@@ -259,6 +283,69 @@ class ContextDB:
             item.confidence = 0.0
         return item
 
+    def _apply_slot(
+        self,
+        item: MemoryItem,
+        raw_text: str | None = None,
+        *,
+        extractor_bound: bool = False,
+    ) -> MemoryItem:
+        """Canonicalize an explicit slot or infer one from raw text.
+
+        When ``extractor_bound`` is set (LLM extraction / consolidation),
+        the extractor is a security boundary: a high-stakes slot the raw
+        text does not independently support is demoted, and a value the
+        raw text contradicts is rewritten to the raw-derived value.
+        Direct ``factual.add`` is developer-authored and is not bound.
+        """
+        from contextdb.core.slots import canonical_slot_value
+
+        source_text = raw_text or item.content
+        explicit = canonicalize_slot(item.entity_key, item.attribute_key)
+        inferred = infer_slot(source_text)
+        chosen = explicit or inferred
+        if explicit is not None and inferred is not None:
+            if (explicit.entity, explicit.attribute) != (inferred.entity, inferred.attribute):
+                chosen = inferred
+                item.epistemic_source = "agent_inferred"
+                item.confidence = min(item.confidence, 0.4)
+            elif extractor_bound:
+                raw_val = canonical_slot_value(source_text, inferred)
+                extracted_val = canonical_slot_value(item.content, explicit)
+                if raw_val != extracted_val:
+                    item.epistemic_source = "agent_inferred"
+                    item.confidence = min(item.confidence, 0.4)
+                    item.slot_value = raw_val
+        if (
+            extractor_bound
+            and explicit is not None
+            and inferred is None
+            and explicit.slot_class in {"health", "legal", "identity", "money"}
+        ):
+            item.epistemic_source = "agent_inferred"
+            item.confidence = min(item.confidence, 0.4)
+        if chosen is not None:
+            item.entity_key = chosen.entity
+            item.attribute_key = chosen.attribute
+            item.slot_class = chosen.slot_class
+            if item.slot_value is None:
+                item.slot_value = canonical_slot_value(source_text, chosen)
+        item.negated = infer_negation(source_text)
+        if item.tenant_id is None:
+            item.tenant_id = self.tenant_id
+        if item.agent_id is None:
+            item.agent_id = self.agent_id
+        if item.session_id is None:
+            item.session_id = self.session_id
+        return item
+
+    def _pii_shadow(self, annotations: list[Any], processed: str) -> str | None:
+        """Typed stand-in so a query with a real email can still retrieve [EMAIL]."""
+        if not annotations:
+            return None
+        kinds = sorted({a.pii_type.value.lower() for a in annotations})
+        return f"user {' '.join(kinds)} on file. {processed}"
+
     async def add(
         self,
         content: str,
@@ -289,6 +376,8 @@ class ContextDB:
         store = self._require_store()
 
         processed, pii_annotations = self._pii.process(content)
+        shadow = self._pii_shadow(pii_annotations, processed)
+        embed_text = shadow or processed
 
         # Optional RL override: NOOP / UPDATE / DELETE short-circuit ADD.
         if self._rl_manager is not None:
@@ -304,14 +393,15 @@ class ContextDB:
             if action == "DELETE" and decision.get("target_memory_id"):
                 await self.delete(decision["target_memory_id"])
 
-        embedding = (await self._embedder.embed([processed]))[0]
+        embedding = (await self._embedder.embed([embed_text]))[0]
+        now = self.clock()
         item = MemoryItem(
             content=processed,
             embedding=embedding,
             memory_type=memory_type,
             source=source,
             metadata=metadata or {},
-            event_time=event_time or datetime.now(tz=timezone.utc),
+            event_time=event_time or now,
             pii_annotations=pii_annotations,
             entity_mentions=entity_mentions or [],
             epistemic_source=epistemic_source or "user_stated",
@@ -323,11 +413,14 @@ class ContextDB:
             ),
             entity_key=entity_key,
             attribute_key=attribute_key,
-            valid_from=datetime.now(tz=timezone.utc),
+            valid_from=now,
+            pii_shadow=shadow,
+            corroborated_by=[speaker_id(self.user_id, self.session_id, self.agent_id)],
         )
+        self._apply_slot(item, raw_text=content)
         self._screen_item(item)
 
-        if entity_key and attribute_key:
+        if item.entity_key and item.attribute_key:
             stored, outcome = await self._trust.write(item, user_id=self.user_id)
         else:
             stored = await store.add(item)
@@ -374,10 +467,14 @@ class ContextDB:
         await self._ensure_init()
         assert self._embedder is not None
         assert self._retrieval is not None
-        moment = as_of or datetime.now(tz=timezone.utc)
+        moment = as_of or self.clock()
         query_embedding = (await self._embedder.embed([query]))[0]
         # Over-fetch so validity/type filtering cannot starve top_k.
         scored = await self._retrieval.search_scored(query, query_embedding, top_k=top_k * 3)
+        floor = self.trust_policy.relevance_floor
+        # Floor is on cosine (comparable across queries), not RRF×salience
+        # (which is ~0.01–0.1 and would abstain on everything).
+        scored = [s for s in scored if s.cosine >= floor]
         items = [s.item for s in scored if s.item.is_valid_at(moment)]
         if memory_type is not None:
             items = [m for m in items if m.memory_type == memory_type]
@@ -395,8 +492,13 @@ class ContextDB:
                     "hits": len(items),
                     "returned_ids": [m.id for m in items],
                     "as_of": moment.isoformat(),
+                    "relevance_floor": floor,
+                    "abstained": len(items) == 0,
                     # Recall-side observability (Epic 6): every recall logs
-                    # the full score decomposition per returned memory.
+                    # the full score decomposition AND the decision flags
+                    # as they stood at recall time — computed properties
+                    # change after confirm(), so a diary of scores without
+                    # the decision is not an audit.
                     "scores": {
                         mid: {
                             "final": round(s.final_score, 6),
@@ -406,6 +508,12 @@ class ContextDB:
                             "recurrence": s.recurrence,
                             "criticality_boost": s.criticality_boost,
                             "per_graph": s.per_graph,
+                            "requires_confirmation": self.trust_policy.requires_confirmation(
+                                s.item
+                            ),
+                            "action_trusted": self.trust_policy.is_trusted(s.item),
+                            "confirmed": s.item.confirmed,
+                            "independent_corroboration": s.item.independent_corroboration,
                         }
                         for mid, s in score_by_id.items()
                         if mid in {m.id for m in items}
@@ -439,8 +547,10 @@ class ContextDB:
         store = self._require_store()
 
         processed, pii_annotations = self._pii.process(content)
-        embedding = (await self._embedder.embed([processed]))[0]
-        now = datetime.now(tz=timezone.utc)
+        shadow = self._pii_shadow(pii_annotations, processed)
+        embed_text = shadow or processed
+        embedding = (await self._embedder.embed([embed_text]))[0]
+        now = self.clock()
         item = MemoryItem(
             content=processed,
             embedding=embedding,
@@ -454,17 +564,37 @@ class ContextDB:
             action_relevant=infer_action_relevant(processed),
             valid_from=now,
             pending_consolidation=True,
+            pii_shadow=shadow,
+            corroborated_by=[speaker_id(self.user_id, self.session_id, self.agent_id)],
         )
+        self._apply_slot(item, raw_text=content)
         self._screen_item(item)
-        stored = await store.add(item)
-        if self._audit is not None:
-            await self._audit.log(
-                operation="CREATE",
-                memory_id=stored.id,
-                user_id=self.user_id,
-                details={"memory_type": memory_type.value, "fast": True},
-            )
+        # Deterministic slot → trust engine (still no LLM). Unkeyed
+        # fast-writes stay a plain append so the turn path stays cheap.
+        if item.entity_key and item.attribute_key and self._trust is not None:
+            stored, _outcome = await self._trust.write(item, user_id=self.user_id)
+        else:
+            stored = await store.add(item)
+            if self._audit is not None:
+                await self._audit.log(
+                    operation="CREATE",
+                    memory_id=stored.id,
+                    user_id=self.user_id,
+                    details={"memory_type": memory_type.value, "fast": True},
+                )
         return stored
+
+    async def confirm(self, memory_id: str) -> MemoryItem:
+        """Write back an explicit user confirmation (closes the verify loop).
+
+        After the agent asked and the user said yes, this graduates the
+        fact: ``confirmed=True``, first-party, high confidence, speaker
+        added to ``corroborated_by``. Under any stock :class:`TrustPolicy`
+        the fact then passes ``recall_for_action``.
+        """
+        await self._ensure_init()
+        assert self._trust is not None
+        return await self._trust.confirm(memory_id, user_id=self.user_id)
 
     async def consolidate_pending(self, batch_size: int = 50) -> int:
         """Drain the fast-write queue: extract, dedupe, supersede behind the write.
@@ -514,7 +644,16 @@ class ContextDB:
                     entity_key=fact.get("entity_key"),
                     attribute_key=fact.get("attribute_key"),
                     metadata={"consolidated_from": [raw.id]},
+                    write_generation=raw.write_generation,
                 )
+                # Extractor is a security boundary: slot must be supported
+                # by the raw text, and extracted trust cannot exceed what
+                # the raw itself would have been assigned.
+                self._apply_slot(new_item, raw_text=raw.content, extractor_bound=True)
+                if new_item.epistemic_source == "user_stated" and not infer_slot(
+                    raw.content
+                ):
+                    new_item.epistemic_source = "agent_inferred"
                 self._screen_item(new_item)
                 saved, outcome = await self._trust.write(new_item, user_id=self.user_id)
                 if outcome in {"added", "superseded"}:
@@ -624,6 +763,7 @@ class ContextDB:
         stored: list[MemoryItem] = []
         store = self._require_store()
         for item in items:
+            self._apply_slot(item, raw_text=conversation, extractor_bound=True)
             self._screen_item(item)
             if item.entity_key and item.attribute_key:
                 saved, outcome = await self._trust.write(item, user_id=self.user_id)
@@ -670,7 +810,7 @@ class ContextDB:
 
         # Fast path: age-only deletes lower to a single SQL statement.
         if entity is None and older_than is not None:
-            cutoff = datetime.now(tz=timezone.utc) - older_than
+            cutoff = self.clock() - older_than
             deleted = await store.delete_older_than(
                 cutoff.isoformat(), user_id=user_id, hard=True
             )
@@ -682,7 +822,7 @@ class ContextDB:
                 )
             return deleted
 
-        now = datetime.now(tz=timezone.utc)
+        now = self.clock()
         needle = entity.lower() if entity is not None else None
         deleted = 0
         async for m in store.iter_memories(user_id=user_id, batch_size=500):
@@ -741,6 +881,26 @@ class ContextDB:
                     added += 1
             if added == 0:
                 break
+
+        # Walk graph edges: a forgotten fact that still has neighbors is
+        # how "forgotten" memories regenerate — not from the row, from
+        # the graph.
+        for graph in self._graphs.values():
+            for memory_id in list(targets):
+                try:
+                    neighbors = await graph.get_neighbors(memory_id, max_results=50)
+                except Exception:  # noqa: BLE001
+                    continue
+                for nid, _weight in neighbors:
+                    if nid in targets:
+                        continue
+                    neighbor = await store.get_raw(nid)
+                    if neighbor is not None:
+                        targets[nid] = neighbor
+                try:
+                    await graph.remove_node(memory_id)
+                except Exception:  # noqa: BLE001
+                    continue
 
         for memory_id in targets:
             await store.delete(memory_id, hard=True)
