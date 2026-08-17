@@ -2,6 +2,36 @@
 
 Copy-paste these into Cursor or Claude Code to integrate ContextDB into your project.
 
+The evals in `tests/evals/test_trust_model.py` are the spec. Do not treat a
+wish as a fact. Do not last-write-win across independent speakers. Do not
+put recalled text into an action prompt without `VerifyBeforeAct`.
+
+---
+
+## 0. Trust-model agent (start here)
+
+```
+I am building an agent that must ACT on memory (book, plate, wire, route)
+without treating wishes as facts.
+
+Use ContextDB (pip install pycontextdb). Hard rules:
+- Store wishes with source="user_stated", confidence<=0.5, action_relevant=True,
+  and a stable entity+attribute slot.
+- Only call tools / change the world from recall_for_action() or
+  VerifyBeforeAct(db).decide(query).kind == "act".
+- If decide() returns "ask", ask the user and call factual.confirm(id) on yes.
+- Same speaker repeating is NOT corroboration. A different session restating
+  the same slot value is.
+- Two sessions asserting different values CONTEST the slot — do not act.
+- add_fast() on the voice/turn path. Never call an LLM on that path.
+- Render recall through contextdb.integrations.prompting.render_recalled_context
+  so recalled text is data, not instructions.
+- Tenant isolation is structural: one ContextDB(user_id=..., tenant_id=...)
+  per tenant. Do not "filter in Python."
+
+Integrate this into my agent now.
+```
+
 ---
 
 ## 1. Add memory to an existing AI agent

@@ -4,14 +4,17 @@
 
 ContextDB replaces the Pinecone + Redis + Postgres + glue-code patchwork with
 one system that understands memory — factual, experiential, and working —
-across semantic, temporal, causal, and entity graphs.
+across semantic, temporal, causal, and entity graphs, **and types every
+fact so an agent can act without treating a wish as a booking**.
 
 > Databricks Lakebase gives agents a hard drive. ContextDB gives agents a brain.
 
 ## Status
 
-v0.1.0 — 82 tests passing, type-checked under `mypy --strict`, ruff clean.
-Search p95 under 5ms at 5K memories on commodity hardware.
+v0.1.1 — 122 tests passing (34 trust-model acceptance evals), type-checked
+under `mypy --strict`, ruff clean. Search p95 under 5ms at 5K memories.
+Fabrication bake-off: trust arm **0%** fabrication / **100%** recall vs
+raw-store baseline 50% / 88%.
 
 ## Install
 
@@ -24,10 +27,24 @@ pip install pycontextdb
 ```python
 import contextdb
 
-ctx = contextdb.init(user_id="user_123")
-await ctx.add("Customer prefers email over phone", memory_type="factual")
-results = await ctx.search("How does this customer prefer to be contacted?")
+db = contextdb.init(user_id="user_123")
+await db.factual.add(
+    "I'd like to come in Thursday",
+    source="user_stated",
+    confidence=0.5,
+    action_relevant=True,
+    entity="caller",
+    attribute="preferred_visit_day",
+)
+# Recalled, but not actionable — it is a wish.
+trusted = await db.factual.recall_for_action("come in Thursday")
+assert trusted == []
+await db.factual.confirm(...)  # user said yes; now it may gate a booking
 ```
+
+The full walkthrough is in [quickstart.md](quickstart.md). The trust model
+is specified by the evals in `tests/evals/test_trust_model.py` — where
+prose and evals disagree, the evals win.
 
 ## License
 

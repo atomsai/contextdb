@@ -78,6 +78,7 @@ Databricks Lakebase gives agents a hard drive. ContextDB gives agents a brain.
 
 | What you use today | What breaks | ContextDB equivalent |
 |---|---|---|
+| Mem0 / supermemory / Zep | Store-and-recall: a wish and a fact are the same object; last write wins; no verify-before-act | Epistemic typing, `TrustPolicy`, contested slots, `recall_for_action()`, `confirm()` |
 | Pinecone / Qdrant / Weaviate | Semantic-only; no temporal, causal, or entity awareness | Multi-graph retrieval fused with RRF (semantic + temporal + causal + entity) |
 | Redis / Memcached | Ephemeral; lost between sessions; no compression | `WorkingMemory` with token-budget paging and FIFO eviction |
 | PostgreSQL / MongoDB | Static rows; no lifecycle; no graph links | `FactualMemory` with formation, evolution, and consolidation |

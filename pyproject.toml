@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pycontextdb"
 version = "0.1.1"
-description = "The unified context layer for AI agents — replacing the patchwork with a memory operating system"
+description = "The unified context layer for AI agents — memory you can act on without treating wishes as facts"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
@@ -20,6 +20,8 @@ keywords = [
     "rag",
     "knowledge-graph",
     "vector-database",
+    "agent-memory",
+    "trust",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

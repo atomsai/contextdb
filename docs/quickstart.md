@@ -15,9 +15,18 @@ import contextdb
 async def main():
     db = contextdb.init(user_id="user_123", llm_api_key="sk-...")
     async with db:
-        await db.add("My birthday is March 5.")
-        hits = await db.search("when is my birthday?")
-        for hit in hits:
+        wish = await db.factual.add(
+            "I'd like to come in Thursday",
+            source="user_stated",
+            confidence=0.5,
+            action_relevant=True,
+            entity="caller",
+            attribute="preferred_visit_day",
+        )
+        print(wish.requires_confirmation)  # True — a wish is not a booking
+        print(await db.factual.recall_for_action("Thursday"))  # []
+        await db.factual.confirm(wish.id)
+        for hit in await db.factual.recall_for_action("Thursday"):
             print(hit.content)
 
 asyncio.run(main())
@@ -46,3 +55,17 @@ db = contextdb.init(
 | `enable_rl_manager`   | `False` | Inference-time memory policy |
 | `enable_audit`        | `True`  | Hash-chained audit log |
 | `enable_auto_link`    | `True`  | Mirror each write into graph indices |
+
+Pass `trust_policy=TrustPolicy.hospital()` (or `.restaurant()`) to change
+the action bar without forking the product. Pass `clock=FrozenClock(...)`
+in tests so `as_of` and `valid_until` agree about "now."
+
+Realtime hosts should write with `db.factual.add_fast(...)` (no LLM on the
+turn path) and gate actions with
+`VerifyBeforeAct(db).decide(query)` — `act` / `ask` / `abstain`.
+
+The fabrication bake-off is the public ruler:
+
+```bash
+python benchmarks/trust_bakeoff.py
+```
