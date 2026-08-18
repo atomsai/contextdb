@@ -143,6 +143,7 @@ def _serialize(item: MemoryItem) -> dict[str, Any]:
     return {
         "id": item.id,
         "content": item.content,
+        "user_id": item.user_id,
         "epistemic_source": item.epistemic_source,
         "confidence": item.confidence,
         "corroboration_count": item.corroboration_count,
