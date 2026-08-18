@@ -12,6 +12,7 @@ Run before publishing (the publish workflow runs it on every release):
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tarfile
 import zipfile
@@ -27,6 +28,11 @@ FORBIDDEN_ARCHIVE_PARTS = (
 )
 
 FORBIDDEN_ARCHIVE_SUFFIXES = (".pem", ".p12", ".rtf", ".key")
+
+# Markdown links whose targets are not absolute URLs. PyPI renders the
+# README as the project page and resolves relative links against the PyPI
+# URL, where they 404 — the long description must only carry absolute links.
+_RELATIVE_MD_LINK = re.compile(r"\]\((?!https?://|#|mailto:)([^)\s]+)\)")
 
 
 def _archive_members(archive: Path) -> list[str]:
@@ -49,6 +55,36 @@ def _forbidden_member(name: str) -> str | None:
         if lowered.endswith(suffix):
             return f"contains denied suffix {suffix!r}: {normalized}"
     return None
+
+
+def _read_member_text(archive: Path, name: str) -> str:
+    if archive.suffix == ".whl":
+        with zipfile.ZipFile(archive) as zf:
+            return zf.read(name).decode("utf-8", errors="replace")
+    with tarfile.open(archive) as tf:
+        member = tf.extractfile(name)
+        if member is None:
+            return ""
+        return member.read().decode("utf-8", errors="replace")
+
+
+def _check_description_links(archive: Path, members: list[str]) -> list[str]:
+    """The rendered long description (METADATA / PKG-INFO) must not carry
+    relative Markdown links — they 404 on the PyPI project page."""
+    errors: list[str] = []
+    meta_names = [
+        m
+        for m in members
+        if m.endswith(".dist-info/METADATA") or m.endswith("PKG-INFO")
+    ]
+    for name in meta_names:
+        text = _read_member_text(archive, name)
+        for target in _RELATIVE_MD_LINK.findall(text):
+            errors.append(
+                f"{archive.name}: relative link {target!r} in the package "
+                "description breaks on PyPI — use an absolute URL"
+            )
+    return errors
 
 
 def check_dist(dist_dir: Path) -> list[str]:
@@ -75,6 +111,7 @@ def check_dist(dist_dir: Path) -> list[str]:
             hit = _forbidden_member(name)
             if hit:
                 errors.append(f"{archive.name}: {hit}")
+        errors.extend(_check_description_links(archive, members))
         if archive.suffix == ".whl":
             for name in members:
                 if name.endswith("/"):

@@ -552,8 +552,8 @@ pip install 'pycontextdb[postgres]'
 db = contextdb.init(storage_url="postgresql://...")
 ```
 
-See [docs/serve.md](docs/serve.md), [docs/multi_tenant.md](docs/multi_tenant.md),
-and [docs/trust_policy.md](docs/trust_policy.md).
+See [docs/serve.md](https://github.com/atomsai/contextdb/blob/main/docs/serve.md), [docs/multi_tenant.md](https://github.com/atomsai/contextdb/blob/main/docs/multi_tenant.md),
+and [docs/trust_policy.md](https://github.com/atomsai/contextdb/blob/main/docs/trust_policy.md).
 
 ## License and attribution
 
@@ -562,14 +562,14 @@ this README ships in this tree, with no feature gates. **ContextDB** is a
 trademark; the Apache license is not a trademark license. Reselling
 ContextDB as a service, or as part of one, under the ContextDB name or
 branding requires a commercial agreement with Atoms AI — contact
-contextdb@atomsai.com (see [COMMERCIAL.md](COMMERCIAL.md)). A public
+contextdb@atomsai.com (see [COMMERCIAL.md](https://github.com/atomsai/contextdb/blob/main/COMMERCIAL.md)). A public
 credit line is optional — if you want one, use **Built with ContextDB**
 linking to this repository.
 
 ## Contributing
 
 Apache 2.0 — see [LICENSE](https://github.com/atomsai/contextdb/blob/main/LICENSE).
-Substantial PRs need a CLA ([CONTRIBUTING.md](CONTRIBUTING.md)).
+Substantial PRs need a CLA ([CONTRIBUTING.md](https://github.com/atomsai/contextdb/blob/main/CONTRIBUTING.md)).
 See [`docs/architecture.md`](https://github.com/atomsai/contextdb/blob/main/docs/architecture.md) for the design rationale. Issues and pull requests welcome on [GitHub](https://github.com/atomsai/contextdb).
 
 **Local setup:**

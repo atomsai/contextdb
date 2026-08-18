@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.3.1 — 2026-08-18
+
+### Fixed
+
+- README links to docs/COMMERCIAL.md/CONTRIBUTING.md are absolute GitHub
+  URLs — relative targets 404 on the PyPI project page.
+- `scripts/check_release.py` now scans the built package description for
+  relative Markdown links so this fails in CI before it reaches PyPI.
+
 ## 0.3.0 — 2026-08-18
 
 Host API scope hardening:
