@@ -25,9 +25,9 @@ jobs:
       - name: Build sdist and wheel
         run: python -m build
 
-      - name: Open-core and accidental-publication inspection
+      - name: Release-safety inspection
         run: |
-          python scripts/check_open_core.py --dist dist --release-tag "${{ github.event.release.tag_name }}"
+          python scripts/check_release.py --dist dist --release-tag "${{ github.event.release.tag_name }}"
 
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
@@ -42,7 +42,7 @@ jobs:
 
     # Trusted-publisher flow: PyPI verifies this workflow via OIDC.
     # Require reviewers on this GitHub Environment so a published tag
-    # cannot reach PyPI without a human (OPEN_CORE.md).
+    # cannot reach PyPI without a human.
     environment:
       name: pypi
       url: https://pypi.org/project/pycontextdb/

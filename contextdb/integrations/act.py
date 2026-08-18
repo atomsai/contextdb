@@ -40,9 +40,15 @@ class VerifyBeforeAct:
         self.top_k = top_k
         self.max_tokens = max_tokens
 
-    async def decide(self, query: str) -> ActionDecision:
-        """Classify a turn: act on trusted facts, ask on untrusted, or abstain."""
-        trusted = await self.client.factual.recall_for_action(query, top_k=self.top_k)
+    async def decide(self, query: str, *, user_id: str | None = None) -> ActionDecision:
+        """Classify a turn: act on trusted facts, ask on untrusted, or abstain.
+
+        ``user_id`` scopes the recall for this call on a shared (unscoped)
+        client; a scoped client still rejects a foreign ``user_id``.
+        """
+        trusted = await self.client.factual.recall_for_action(
+            query, top_k=self.top_k, user_id=user_id
+        )
         trusted = [m for m in trusted if not m.injection_suspect]
         if trusted:
             decision = ActionDecision(
@@ -52,11 +58,11 @@ class VerifyBeforeAct:
                 pending_confirmation=[],
                 reason="trusted facts available",
             )
-            await self._audit(query, decision)
+            await self._audit(query, decision, user_id=user_id)
             return decision
         recalled = [
             m
-            for m in await self.client.factual.recall(query, top_k=self.top_k)
+            for m in await self.client.factual.recall(query, top_k=self.top_k, user_id=user_id)
             if not m.injection_suspect
         ]
         if recalled:
@@ -68,7 +74,7 @@ class VerifyBeforeAct:
                 pending_confirmation=pending,
                 reason="facts present but require confirmation",
             )
-            await self._audit(query, decision)
+            await self._audit(query, decision, user_id=user_id)
             return decision
         decision = ActionDecision(
             kind="abstain",
@@ -77,17 +83,25 @@ class VerifyBeforeAct:
             pending_confirmation=[],
             reason="nothing on file (relevance floor or empty store)",
         )
-        await self._audit(query, decision)
+        await self._audit(query, decision, user_id=user_id)
         return decision
 
-    async def _audit(self, query: str, decision: ActionDecision) -> None:
+    async def _audit(
+        self,
+        query: str,
+        decision: ActionDecision,
+        *,
+        user_id: str | None = None,
+    ) -> None:
         if self.client.audit is None:
             return
         await self.client.audit.log(
             operation="DECIDE",
-            user_id=self.client.user_id,
+            user_id=user_id if user_id is not None else self.client.user_id,
             details={
-                "query": query,
+                # The audit chain is append-only: persist only the
+                # PII-processed form of the query.
+                "query": self.client._redact_for_audit(query),
                 "kind": decision.kind,
                 "reason": decision.reason,
                 "memory_ids": [m.id for m in decision.memories],
@@ -95,9 +109,17 @@ class VerifyBeforeAct:
             },
         )
 
-    async def confirm_pending(self, memory_ids: list[str]) -> list[MemoryItem]:
-        """Write back the user's yes. This is the closed loop."""
+    async def confirm_pending(
+        self,
+        memory_ids: list[str],
+        *,
+        user_id: str | None = None,
+    ) -> list[MemoryItem]:
+        """Write back the user's yes. This is the closed loop.
+
+        ``user_id`` scopes the confirmation on a shared (unscoped) client.
+        """
         confirmed = []
         for mid in memory_ids:
-            confirmed.append(await self.client.factual.confirm(mid))
+            confirmed.append(await self.client.factual.confirm(mid, user_id=user_id))
         return confirmed

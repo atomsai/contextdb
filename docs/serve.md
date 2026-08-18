@@ -1,7 +1,7 @@
 # HTTP server
 
-stdio MCP only works for a local Python process. Node, Go, Cloud Run, and
-Lambda need a port.
+stdio MCP only works for a local Python process. Node, Go, and serverless
+hosts need a port.
 
 ```bash
 pip install 'pycontextdb[serve]'

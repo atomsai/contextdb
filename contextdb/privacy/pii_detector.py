@@ -15,7 +15,9 @@ Three actions are supported:
   store).
 * ``encrypt`` — replace each PII span with ``[<TYPE>]`` but store a Fernet
   ciphertext in :attr:`PIIAnnotation.original`. Reversible via :meth:`decrypt`
-  when the caller holds the key.
+  when the caller holds the key. **Fails closed**: without a key the
+  detector raises :class:`ConfigError` — a silent downgrade would persist
+  plaintext originals where the operator expects ciphertext.
 * ``flag`` / ``allow`` — leave text intact; only annotations are produced.
 """
 
@@ -23,18 +25,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import logging
 import os
 import re
 from typing import Literal
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from contextdb.core.exceptions import ConfigError
 from contextdb.core.models import PIIAnnotation, PIIType
 
 PIIAction = Literal["redact", "encrypt", "flag", "allow"]
-
-_logger = logging.getLogger(__name__)
 
 # Patterns applied in order. The credit-card pattern comes before phone so
 # 16-digit card numbers without dashes don't get misclassified when the phone
@@ -86,14 +86,14 @@ class PIIDetector:
         self._fernet: Fernet | None = None
         if action == "encrypt":
             key = encryption_key or os.environ.get("CONTEXTDB_PII_KEY")
-            if key:
-                self._fernet = Fernet(_derive_fernet_key(key))
-            else:
-                _logger.warning(
-                    "PII action is 'encrypt' but no key is configured "
-                    "(pass encryption_key= or set CONTEXTDB_PII_KEY). "
-                    "Falling back to redact; originals will NOT be recoverable."
+            if not key:
+                raise ConfigError(
+                    "pii_action='encrypt' requires a key (pass encryption_key= "
+                    "or set CONTEXTDB_PII_KEY). Refusing to degrade to redact: "
+                    "a silent downgrade stores annotation originals as "
+                    "plaintext where the operator expects ciphertext."
                 )
+            self._fernet = Fernet(_derive_fernet_key(key))
 
     def detect(self, text: str) -> list[PIIAnnotation]:
         """Return non-overlapping PII spans sorted by start offset."""
@@ -106,11 +106,19 @@ class PIIDetector:
                     continue
                 taken.append((start, end))
                 original = match.group()
-                stored_original = (
-                    self._fernet.encrypt(original.encode("utf-8")).decode("ascii")
-                    if self._fernet is not None
-                    else original
-                )
+                if self._fernet is not None:
+                    stored_original = self._fernet.encrypt(original.encode("utf-8")).decode(
+                        "ascii"
+                    )
+                elif self.action == "encrypt":
+                    # Unreachable after the __init__ guard; kept as a hard
+                    # stop so encryption mode can never persist plaintext.
+                    raise ConfigError(
+                        "pii_action='encrypt' without a key must never store "
+                        "plaintext annotation originals."
+                    )
+                else:
+                    stored_original = original
                 found.append(
                     PIIAnnotation(
                         pii_type=pii_type,

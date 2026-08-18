@@ -64,7 +64,11 @@ write so a later consolidator cannot race a newer typed fact.
 
 PII detection runs before the embedder ever sees a raw email address or
 SSN — on **writes and queries**. The audit logger hash-chains every write,
-search, `DECIDE` (act/ask/abstain), and deletion. `forget_user` walks graph
-edges and signs the deletion set. The retention manager applies typed TTLs
-and honors right-to-erasure requests. Isolation is a store predicate
-(`user_id` / `tenant_id` / `agent_id`), not a convention.
+search, `DECIDE` (act/ask/abstain), and deletion — and because the chain
+is append-only, only the PII-processed form of a query is ever logged.
+`pii_action="encrypt"` fails closed: without a key the client refuses to
+initialize rather than store plaintext annotation originals.
+`forget_user` walks graph edges and signs the deletion set. The retention
+manager applies typed TTLs and honors right-to-erasure requests. Isolation
+is a store predicate (`user_id` / `tenant_id` / `agent_id`), not a
+convention.

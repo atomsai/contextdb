@@ -215,7 +215,8 @@ class CausalGraph(BaseGraph):
                 "WHERE target_id = ? ORDER BY weight DESC LIMIT 1",
                 (current,),
             )
-            row = await cursor.fetchone()
+            rows = await cursor.fetchall()
+            row = rows[0] if rows else None
             if row is None or row["source_id"] in seen:
                 break
             current = row["source_id"]

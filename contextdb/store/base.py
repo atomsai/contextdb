@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from contextdb.core.models import MemoryStatus
 
 if TYPE_CHECKING:
-    import asyncio
+    from contextlib import AbstractAsyncContextManager
 
     from contextdb.core.models import MemoryItem, MemoryType
 
@@ -137,5 +137,20 @@ class BaseStore(ABC):
         entity_key: str,
         attribute_key: str,
         user_id: str | None = None,
-    ) -> asyncio.Lock:
+    ) -> AbstractAsyncContextManager[Any]:
+        """Mutual exclusion for one (user, tenant, entity, attribute) slot.
+
+        Networked stores must serialize across processes (e.g. a Postgres
+        advisory lock), not just within one event loop.
+        """
+        raise NotImplementedError
+
+    def audit_lock(self) -> AbstractAsyncContextManager[Any]:
+        """Serialize audit-chain appends.
+
+        The chain is read-modify-write (latest hash becomes the next
+        entry's ``previous_hash``), so concurrent appends must be fully
+        ordered — within one process and, for networked stores, across
+        processes. Single-process stores return a per-instance lock.
+        """
         raise NotImplementedError

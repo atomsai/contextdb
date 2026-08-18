@@ -111,7 +111,8 @@ class EntityGraph(BaseGraph):
             "SELECT id, attributes FROM entities WHERE LOWER(name) = ?",
             (entity.name.lower(),),
         )
-        row = await cursor.fetchone()
+        rows = await cursor.fetchall()
+        row = rows[0] if rows else None
         if row is not None:
             if entity.attributes:
                 existing = json.loads(row["attributes"] or "{}")
@@ -214,7 +215,8 @@ class EntityGraph(BaseGraph):
             "SELECT id, name, entity_type, attributes FROM entities WHERE LOWER(name) = ?",
             (name.lower(),),
         )
-        row = await cursor.fetchone()
+        rows = await cursor.fetchall()
+        row = rows[0] if rows else None
         if row is None:
             return {"name": name, "memories": [], "attributes": {}}
         eid = row["id"]

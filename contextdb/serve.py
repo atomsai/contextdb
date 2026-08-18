@@ -1,7 +1,8 @@
 """Network server — HTTP JSON plus optional MCP streamable HTTP.
 
-Node, Go, and Cloud Run hosts cannot speak stdio MCP. This module is the
-replacement for the FastAPI wrapper every integrator otherwise writes.
+Hosts that are not a local Python process — Node, Go, serverless
+functions — cannot speak stdio MCP. This module is the replacement for
+the FastAPI wrapper every integrator otherwise writes.
 
 Install: ``pip install 'pycontextdb[serve]'``.
 

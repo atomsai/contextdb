@@ -12,7 +12,7 @@ Install: ``pip install 'pycontextdb[postgres]'``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,6 +24,9 @@ from contextdb.core.models import MemoryItem, MemoryStatus, MemoryType
 from contextdb.store.base import BaseStore
 from contextdb.store.pg_sql import split_script, translate_sqlite_sql
 from contextdb.store.sqlite_store import (
+    _BUMP_REVISION_SQL,
+    _READ_REVISION_SQL,
+    _REVISION_KEY,
     _TRUST_COLUMNS,
     SCHEMA,
     _embedding_to_blob,
@@ -33,6 +36,20 @@ from contextdb.store.sqlite_store import (
 from contextdb.store.vector_index import VectorIndex, get_vector_index
 
 _PG_SCHEMA = SCHEMA.replace("BLOB", "BYTEA")
+
+# Postgres' catalogs are not race-safe even for IF NOT EXISTS DDL: two
+# workers initializing one database concurrently can collide on the catalog
+# unique indexes (23505) or duplicate table/object/column (42P07/42710/
+# 42701). The object exists afterwards either way — which is the intent.
+_SCHEMA_RACE_SQLSTATES = frozenset({"23505", "42P07", "42710", "42701"})
+
+
+async def _exec_schema_statement(conn: Any, stmt: str) -> None:
+    try:
+        await conn.execute(stmt)
+    except Exception as exc:  # noqa: BLE001
+        if getattr(exc, "sqlstate", None) not in _SCHEMA_RACE_SQLSTATES:
+            raise
 
 
 class _PgResult:
@@ -57,7 +74,7 @@ class _PgAdapter:
         translated = translate_sqlite_sql(sql)
         async with self._pool.acquire() as conn:
             stripped = translated.lstrip().upper()
-            if stripped.startswith("SELECT"):
+            if stripped.startswith("SELECT") or "RETURNING" in stripped:
                 rows = await conn.fetch(translated, *params)
                 return _PgResult([dict(row) for row in rows], rowcount=len(rows))
             status = await conn.execute(translated, *params)
@@ -69,10 +86,57 @@ class _PgAdapter:
     async def executescript(self, script: str) -> None:
         async with self._pool.acquire() as conn:
             for stmt in split_script(script):
-                await conn.execute(translate_sqlite_sql(stmt))
+                await _exec_schema_statement(conn, translate_sqlite_sql(stmt))
 
     async def commit(self) -> None:
         return None
+
+
+class _PgAdvisoryLock:
+    """Cross-process mutex via a transaction-scoped Postgres advisory lock.
+
+    ``pg_advisory_xact_lock`` serializes holders of the same key across
+    every connection and process on the database; the transaction ends
+    the hold. The in-process ``guard`` runs first so one event loop can
+    hold at most one pool connection while *waiting* on the advisory
+    lock — without it, N waiting tasks would hold N connections and a
+    lock holder's own critical section could starve the pool.
+    """
+
+    def __init__(self, pool: Any, key: str, guard: asyncio.Lock) -> None:
+        self._pool = pool
+        self._key = key
+        self._guard = guard
+        self._conn: Any = None
+        self._tx: Any = None
+
+    async def __aenter__(self) -> _PgAdvisoryLock:
+        await self._guard.acquire()
+        try:
+            self._conn = await self._pool.acquire()
+            self._tx = self._conn.transaction()
+            await self._tx.start()
+            await self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))", self._key
+            )
+        except BaseException:
+            if self._conn is not None:
+                await self._pool.release(self._conn)
+                self._conn = None
+            self._guard.release()
+            raise
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        try:
+            if exc_type is None:
+                await self._tx.commit()
+            else:
+                await self._tx.rollback()
+        finally:
+            await self._pool.release(self._conn)
+            self._conn = None
+            self._guard.release()
 
 
 class PostgresStore(BaseStore):
@@ -96,9 +160,16 @@ class PostgresStore(BaseStore):
         self._index: VectorIndex | None = vector_index
         self._embedding_dim = embedding_dim
         self._index_loaded = False
+        self._loaded_revision: int | None = None
         self._write_lock = asyncio.Lock()
-        self._slot_locks: dict[tuple[str, ...], asyncio.Lock] = {}
-        self._slot_locks_guard = asyncio.Lock()
+        # In-process gates for the cross-process advisory locks (see
+        # _PgAdvisoryLock for why the two layers are both needed). One gate
+        # per lock class — not per key — so a process holds at most one
+        # slot advisory connection and one audit advisory connection;
+        # per-key gates could hold one connection per distinct key and
+        # starve the pool.
+        self._slot_advisory_gate = asyncio.Lock()
+        self._audit_guard = asyncio.Lock()
 
     async def initialize(self) -> None:
         if self._pool is not None:
@@ -113,7 +184,7 @@ class PostgresStore(BaseStore):
         self._adapter = _PgAdapter(self._pool)
         async with self._pool.acquire() as conn:
             for stmt in split_script(_PG_SCHEMA):
-                await conn.execute(stmt)
+                await _exec_schema_statement(conn, stmt)
             cols = {
                 row["column_name"]
                 for row in await conn.fetch(
@@ -123,12 +194,13 @@ class PostgresStore(BaseStore):
             }
             for column, ddl in _TRUST_COLUMNS:
                 if column not in cols:
-                    await conn.execute(
-                        f"ALTER TABLE memories ADD COLUMN IF NOT EXISTS {column} {ddl}"
+                    await _exec_schema_statement(
+                        conn,
+                        f"ALTER TABLE memories ADD COLUMN IF NOT EXISTS {column} {ddl}",
                     )
             if "user_id" not in cols:
-                await conn.execute(
-                    "ALTER TABLE memories ADD COLUMN IF NOT EXISTS user_id TEXT"
+                await _exec_schema_statement(
+                    conn, "ALTER TABLE memories ADD COLUMN IF NOT EXISTS user_id TEXT"
                 )
 
     def _require_conn(self) -> _PgAdapter:
@@ -173,15 +245,24 @@ class PostgresStore(BaseStore):
         entity_key: str,
         attribute_key: str,
         user_id: str | None = None,
-    ) -> asyncio.Lock:
+    ) -> _PgAdvisoryLock:
+        """Cross-process slot mutex: in-process gate + advisory xact lock.
+
+        Two workers writing the same (user, tenant, entity, attribute)
+        slot from different processes serialize on the advisory key, so
+        read-slot-then-write in the trust engine cannot interleave.
+        """
         scope = self._resolve_scope(user_id)
-        key = (scope or "", self._tenant_id or "", entity_key, attribute_key)
-        async with self._slot_locks_guard:
-            lock = self._slot_locks.get(key)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._slot_locks[key] = lock
-            return lock
+        key = "|".join((scope or "", self._tenant_id or "", entity_key, attribute_key))
+        return _PgAdvisoryLock(
+            self._require_pool(), f"contextdb-slot:{key}", self._slot_advisory_gate
+        )
+
+    def audit_lock(self) -> _PgAdvisoryLock:
+        """Cross-process serialization for hash-chain appends."""
+        return _PgAdvisoryLock(
+            self._require_pool(), "contextdb-audit-chain", self._audit_guard
+        )
 
     async def _fetch(
         self, sql: str, params: list[Any] | tuple[Any, ...] = ()
@@ -193,23 +274,84 @@ class PostgresStore(BaseStore):
         result = await self._require_conn().execute(sql, list(params))
         return int(result.rowcount)
 
+    async def _read_revision(self) -> int:
+        rows = await self._fetch(_READ_REVISION_SQL, (_REVISION_KEY,))
+        return int(rows[0]["value"]) if rows else 0
+
+    async def _bump_revision(self) -> int:
+        """Atomically increment the global store revision and return it.
+
+        Called inside the write lock alongside the mutation, so a revision
+        the process-local index has not seen always means "someone wrote".
+        """
+        rows = await self._fetch(_BUMP_REVISION_SQL, (_REVISION_KEY,))
+        assert rows
+        return int(rows[0]["value"])
+
     async def _ensure_index(self) -> VectorIndex:
         if self._index is None:
             self._index = get_vector_index(self._embedding_dim)
-        if not self._index_loaded:
-            rows = await self._fetch(
-                "SELECT id, embedding, embedding_dim FROM memories "
-                "WHERE embedding IS NOT NULL AND status = 'ACTIVE'"
-            )
-            if rows:
-                ids = [row["id"] for row in rows]
-                vectors = np.stack(
-                    [_pg_embedding(row["embedding"]) for row in rows],
-                    axis=0,
-                )
-                self._index.add(ids, vectors)
-            self._index_loaded = True
+        revision = await self._read_revision()
+        if self._index_loaded and self._loaded_revision == revision:
+            return self._index
+        async with self._write_lock:
+            # Re-check under the lock: a writer may have synced meanwhile.
+            revision = await self._read_revision()
+            if self._index_loaded and self._loaded_revision == revision:
+                return self._index
+            await self._rebuild_index(revision)
         return self._index
+
+    async def _rebuild_index(self, revision: int) -> None:
+        """Reload the process-local index from the authoritative rows.
+
+        Caller must hold ``_write_lock``. The snapshot reflects every
+        committed write up to and including ``revision`` — including
+        writes from other processes sharing this database.
+        """
+        assert self._index is not None
+        self._index.remove(self._index.ids())
+        rows = await self._fetch(
+            "SELECT id, embedding, embedding_dim FROM memories "
+            "WHERE embedding IS NOT NULL AND status = 'ACTIVE' "
+            "AND embedding_dim = ?",
+            (self._embedding_dim,),
+        )
+        if rows:
+            ids = [row["id"] for row in rows]
+            vectors = np.stack(
+                [_pg_embedding(row["embedding"]) for row in rows],
+                axis=0,
+            )
+            self._index.add(ids, vectors)
+        self._index_loaded = True
+        self._loaded_revision = revision
+
+    def _sync_index_after_write(
+        self,
+        revision: int,
+        delta: Callable[[VectorIndex], None] | None = None,
+    ) -> None:
+        """Reconcile the process-local index with a just-committed write.
+
+        Caller must hold ``_write_lock``; the write must already have
+        bumped the store revision to ``revision``. A warm index that was
+        coherent at ``revision - 1`` takes the incremental ``delta``.
+        Anything else — a cold index, a bulk mutation with no cheap delta
+        (``delta=None``), or an interleaved write from another process —
+        invalidates the snapshot so the next read rebuilds from the
+        authoritative rows (which include this write).
+        """
+        if self._index is None:
+            self._index = get_vector_index(self._embedding_dim)
+        if not self._index_loaded:
+            return
+        if delta is not None and self._loaded_revision == revision - 1:
+            delta(self._index)
+            self._loaded_revision = revision
+            return
+        self._index_loaded = False
+        self._loaded_revision = None
 
     async def add(self, item: MemoryItem) -> MemoryItem:
         uid = item.user_id or self._user_id
@@ -282,9 +424,16 @@ class PostgresStore(BaseStore):
                     int(item.contested),
                 ),
             )
-        if item.embedding is not None:
-            index = await self._ensure_index()
-            index.add([item.id], np.asarray([item.embedding], dtype=np.float32))
+            revision = await self._bump_revision()
+            if item.embedding is not None:
+                embedding = item.embedding
+
+                def _delta(index: VectorIndex) -> None:
+                    index.add([item.id], np.asarray([embedding], dtype=np.float32))
+
+                self._sync_index_after_write(revision, _delta)
+            else:
+                self._sync_index_after_write(revision)
         return item
 
     async def get(self, memory_id: str) -> MemoryItem | None:
@@ -393,14 +542,21 @@ class PostgresStore(BaseStore):
             await self._execute(
                 f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", params
             )
-        if "embedding" in kwargs:
-            index = await self._ensure_index()
-            index.remove([memory_id])
-            if kwargs["embedding"] is not None:
-                index.add(
-                    [memory_id],
-                    np.asarray([kwargs["embedding"]], dtype=np.float32),
-                )
+            revision = await self._bump_revision()
+            if "embedding" in kwargs:
+                new_embedding = kwargs["embedding"]
+
+                def _delta(index: VectorIndex) -> None:
+                    index.remove([memory_id])
+                    if new_embedding is not None:
+                        index.add(
+                            [memory_id],
+                            np.asarray([new_embedding], dtype=np.float32),
+                        )
+
+                self._sync_index_after_write(revision, _delta)
+            else:
+                self._sync_index_after_write(revision)
         refreshed = await self.get_raw(memory_id)
         assert refreshed is not None
         return refreshed
@@ -424,8 +580,12 @@ class PostgresStore(BaseStore):
                         memory_id,
                     ),
                 )
-        if self._index is not None and self._index_loaded:
-            self._index.remove([memory_id])
+            revision = await self._bump_revision()
+
+            def _delta(index: VectorIndex) -> None:
+                index.remove([memory_id])
+
+            self._sync_index_after_write(revision, _delta)
         return True
 
     async def search_by_embedding(
@@ -438,7 +598,24 @@ class PostgresStore(BaseStore):
         index = await self._ensure_index()
         query = np.asarray(embedding, dtype=np.float32)
         scope_sql, scope_params = self._scope_sql(user_id)
-        raw = index.search(query, top_k=top_k * 3 if (filters or scope_sql) else top_k)
+        # Scope candidates BEFORE ranking: the allowlist comes from the
+        # authoritative SQL scope, so out-of-scope vectors never compete
+        # for the candidate budget (and a large foreign tenant cannot
+        # starve an in-scope hit).
+        allow_sql = (
+            "SELECT id FROM memories WHERE status = 'ACTIVE' AND embedding IS NOT NULL"
+        )
+        if scope_sql:
+            allow_sql += f" AND {scope_sql}"
+        candidate_ids = {row["id"] for row in await self._fetch(allow_sql, scope_params)}
+        if not candidate_ids:
+            return []
+        # Fetch extra only to allow for post-filter culling.
+        raw = index.search(
+            query,
+            top_k=top_k * 3 if filters else top_k,
+            include_ids=candidate_ids,
+        )
         if not raw:
             return []
         ids = [mid for mid, _ in raw]
@@ -628,9 +805,10 @@ class PostgresStore(BaseStore):
                     f"UPDATE memories SET status = 'DELETED', updated_at = ? WHERE {where}",
                     [datetime.now(tz=timezone.utc).isoformat(), *params],
                 )
-        if self._index is not None and self._index_loaded:
-            self._index_loaded = False
-            self._index = None
+            revision = await self._bump_revision()
+            # Bulk mutation has no cheap delta: the snapshot is invalidated
+            # and the next read rebuilds at the current revision.
+            self._sync_index_after_write(revision)
         return deleted
 
     async def close(self) -> None:

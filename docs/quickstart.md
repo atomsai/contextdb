@@ -48,8 +48,8 @@ db = contextdb.init(
 
 ## Optional local features
 
-These flags are pathways in the Apache SDK, not paid entitlements.
-See [OPEN_CORE.md](../OPEN_CORE.md).
+These flags are optional local pathways in the Apache SDK — everything
+here works offline.
 
 | Flag | Default | What it enables |
 |------|---------|------------------|

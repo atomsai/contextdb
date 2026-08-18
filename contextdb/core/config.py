@@ -75,8 +75,9 @@ class ContextDBConfig(BaseSettings):
         default=None,
         description=(
             "Secret used when pii_action='encrypt'. Falls back to "
-            "CONTEXTDB_PII_KEY env var. Without either, encrypt degrades "
-            "to redact (originals unrecoverable)."
+            "CONTEXTDB_PII_KEY env var. Without either, initialization "
+            "raises ConfigError — encrypt fails closed rather than "
+            "storing plaintext annotation originals."
         ),
     )
     retention_ttl_days: int | None = Field(
@@ -108,8 +109,8 @@ class ContextDBConfig(BaseSettings):
         description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     )
 
-    # Optional local pathways in the open SDK — not entitlements. Cloud
-    # features are never gated by a boolean in this package.
+    # Optional local pathways in the open SDK. No feature in this package
+    # is gated behind a hosted offering.
     enable_entity_graph: bool = Field(default=True)
     enable_multi_graph: bool = Field(default=False)
     enable_rl_manager: bool = Field(default=False)
