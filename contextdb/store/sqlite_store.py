@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -82,7 +82,26 @@ CREATE INDEX IF NOT EXISTS idx_memories_slot ON memories(entity_key, attribute_k
 CREATE INDEX IF NOT EXISTS idx_memories_pending ON memories(pending_consolidation);
 CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+
+CREATE TABLE IF NOT EXISTS contextdb_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
+
+# The process-local vector index mirrors rows owned by the database. Every
+# mutating statement bumps this revision; an index whose loaded revision
+# differs from the store's is rebuilt before it serves a search. That is
+# what keeps two clients over one database (two instances in a process, or
+# many processes on Postgres) from serving each other's writes as stale.
+_REVISION_KEY = "index_revision"
+_READ_REVISION_SQL = "SELECT value FROM contextdb_meta WHERE key = ?"
+_BUMP_REVISION_SQL = (
+    "INSERT INTO contextdb_meta (key, value) VALUES (?, '1') "
+    "ON CONFLICT(key) DO UPDATE "
+    "SET value = CAST(CAST(contextdb_meta.value AS INTEGER) + 1 AS TEXT) "
+    "RETURNING contextdb_meta.value"
+)
 
 # Trust-model columns added after v0.1. Each entry: (column, DDL fragment).
 # Applied idempotently by _migrate() for databases created before the trust
@@ -154,6 +173,22 @@ def _blob_to_embedding(blob: bytes | None) -> list[float] | None:
 
 def _opt_datetime(raw: Any) -> datetime | None:
     return datetime.fromisoformat(raw) if raw else None
+
+
+async def _fetchone(
+    conn: aiosqlite.Connection, sql: str, params: tuple[Any, ...] | list[Any] = ()
+) -> Any:
+    """fetchone that fully steps the cursor.
+
+    An aiosqlite cursor that has returned its last row but has not been
+    stepped to completion keeps the statement "in progress", and a
+    concurrent ``commit()`` on the shared connection then fails with
+    ``OperationalError: cannot commit transaction``. Exhausting the
+    cursor avoids that.
+    """
+    cursor = await conn.execute(sql, params)
+    rows = await cursor.fetchall()
+    return next(iter(rows), None)
 
 
 def _row_to_item(row: Mapping[str, Any]) -> MemoryItem:
@@ -236,11 +271,15 @@ class SQLiteStore(BaseStore):
         self._index: VectorIndex | None = vector_index
         self._embedding_dim = embedding_dim
         self._index_loaded = False
+        self._loaded_revision: int | None = None
         self._write_lock: asyncio.Lock = asyncio.Lock()
         # Per-slot locks: two concurrent corrections into the same slot
         # must not both read the old occupant and both write.
         self._slot_locks: dict[tuple[str, ...], asyncio.Lock] = {}
         self._slot_locks_guard = asyncio.Lock()
+        # Serializes hash-chain appends from the audit log (in-process;
+        # SQLite is documented as a single-process store).
+        self._audit_append_lock: asyncio.Lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         if self._conn is not None:
@@ -320,9 +359,10 @@ class SQLiteStore(BaseStore):
         """Lock keyed on (user, tenant, entity, attribute) — not the row.
 
         Two concurrent "actually 4pm" / "actually 5pm" writes into the
-        same slot must serialize. Postgres hosts should take
-        ``SELECT … FOR UPDATE`` on this key; SQLite serializes via this
-        in-process lock plus the global write lock.
+        same slot must serialize. SQLite serializes via this in-process
+        lock plus the global write lock; it is documented as a
+        single-process store (multi-process hosts use the Postgres
+        backend, whose slot lock is a cross-process advisory lock).
         """
         scope = self._resolve_scope(user_id)
         key = (scope or "", self._tenant_id or "", entity_key, attribute_key)
@@ -333,25 +373,96 @@ class SQLiteStore(BaseStore):
                 self._slot_locks[key] = lock
             return lock
 
+    def audit_lock(self) -> asyncio.Lock:
+        """In-process serialization for hash-chain appends."""
+        return self._audit_append_lock
+
+    async def _read_revision(self) -> int:
+        row = await _fetchone(self._require_conn(), _READ_REVISION_SQL, (_REVISION_KEY,))
+        return int(row["value"]) if row else 0
+
+    async def _bump_revision(self, conn: aiosqlite.Connection) -> int:
+        """Atomically increment the global store revision and return it.
+
+        Called inside the write lock, in the same commit as the mutation,
+        so a revision the index has not seen always means "someone wrote".
+
+        ``execute_fetchall`` runs execute+drain as one worker-thread call:
+        a RETURNING statement that stays active across an await boundary
+        makes a concurrent ``commit()`` on this shared connection fail
+        with "cannot commit transaction - SQL statements in progress".
+        """
+        rows = await conn.execute_fetchall(_BUMP_REVISION_SQL, (_REVISION_KEY,))
+        row = next(iter(rows), None)
+        assert row is not None
+        return int(row["value"])
+
     async def _ensure_index(self) -> VectorIndex:
         if self._index is None:
             self._index = get_vector_index(self._embedding_dim)
-        if not self._index_loaded:
-            conn = self._require_conn()
-            cursor = await conn.execute(
-                "SELECT id, embedding, embedding_dim FROM memories "
-                "WHERE embedding IS NOT NULL AND status = 'ACTIVE'"
-            )
-            rows = await cursor.fetchall()
-            if rows:
-                ids = [row["id"] for row in rows]
-                vectors = np.stack(
-                    [np.frombuffer(row["embedding"], dtype=np.float32) for row in rows],
-                    axis=0,
-                )
-                self._index.add(ids, vectors)
-            self._index_loaded = True
+        revision = await self._read_revision()
+        if self._index_loaded and self._loaded_revision == revision:
+            return self._index
+        async with self._write_lock:
+            # Re-check under the lock: a writer may have synced meanwhile.
+            revision = await self._read_revision()
+            if self._index_loaded and self._loaded_revision == revision:
+                return self._index
+            await self._rebuild_index(revision)
         return self._index
+
+    async def _rebuild_index(self, revision: int) -> None:
+        """Reload the process-local index from the authoritative rows.
+
+        Caller must hold ``_write_lock``. The snapshot reflects every
+        write up to and including ``revision`` — including writes made by
+        other instances or processes sharing this database.
+        """
+        assert self._index is not None
+        conn = self._require_conn()
+        self._index.remove(self._index.ids())
+        cursor = await conn.execute(
+            "SELECT id, embedding, embedding_dim FROM memories "
+            "WHERE embedding IS NOT NULL AND status = 'ACTIVE' "
+            "AND embedding_dim = ?",
+            (self._embedding_dim,),
+        )
+        rows = await cursor.fetchall()
+        if rows:
+            ids = [row["id"] for row in rows]
+            vectors = np.stack(
+                [np.frombuffer(row["embedding"], dtype=np.float32) for row in rows],
+                axis=0,
+            )
+            self._index.add(ids, vectors)
+        self._index_loaded = True
+        self._loaded_revision = revision
+
+    def _sync_index_after_write(
+        self,
+        revision: int,
+        delta: Callable[[VectorIndex], None] | None = None,
+    ) -> None:
+        """Reconcile the process-local index with a just-committed write.
+
+        Caller must hold ``_write_lock``; the write must already have
+        bumped the store revision to ``revision``. A warm index that was
+        coherent at ``revision - 1`` takes the incremental ``delta``.
+        Anything else — a cold index, a bulk mutation with no cheap delta
+        (``delta=None``), or an interleaved write from another instance or
+        process — invalidates the snapshot so the next read rebuilds from
+        the authoritative rows (which include this write).
+        """
+        if self._index is None:
+            self._index = get_vector_index(self._embedding_dim)
+        if not self._index_loaded:
+            return
+        if delta is not None and self._loaded_revision == revision - 1:
+            delta(self._index)
+            self._loaded_revision = revision
+            return
+        self._index_loaded = False
+        self._loaded_revision = None
 
     async def add(self, item: MemoryItem) -> MemoryItem:
         conn = self._require_conn()
@@ -425,16 +536,22 @@ class SQLiteStore(BaseStore):
                     int(item.contested),
                 ),
             )
+            revision = await self._bump_revision(conn)
             await conn.commit()
-        if item.embedding is not None:
-            index = await self._ensure_index()
-            index.add([item.id], np.asarray([item.embedding], dtype=np.float32))
+            if item.embedding is not None:
+                embedding = item.embedding
+
+                def _delta(index: VectorIndex) -> None:
+                    index.add([item.id], np.asarray([embedding], dtype=np.float32))
+
+                self._sync_index_after_write(revision, _delta)
+            else:
+                self._sync_index_after_write(revision)
         return item
 
     async def get(self, memory_id: str) -> MemoryItem | None:
         conn = self._require_conn()
-        cursor = await conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
-        row = await cursor.fetchone()
+        row = await _fetchone(conn, "SELECT * FROM memories WHERE id = ?", (memory_id,))
         if row is None or not self._scope_allows(row):
             return None
         item = _row_to_item(dict(row))
@@ -551,16 +668,22 @@ class SQLiteStore(BaseStore):
             await conn.execute(
                 f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", params
             )
+            revision = await self._bump_revision(conn)
             await conn.commit()
+            if "embedding" in kwargs:
+                new_embedding = kwargs["embedding"]
 
-        if "embedding" in kwargs:
-            index = await self._ensure_index()
-            index.remove([memory_id])
-            if kwargs["embedding"] is not None:
-                index.add(
-                    [memory_id],
-                    np.asarray([kwargs["embedding"]], dtype=np.float32),
-                )
+                def _delta(index: VectorIndex) -> None:
+                    index.remove([memory_id])
+                    if new_embedding is not None:
+                        index.add(
+                            [memory_id],
+                            np.asarray([new_embedding], dtype=np.float32),
+                        )
+
+                self._sync_index_after_write(revision, _delta)
+            else:
+                self._sync_index_after_write(revision)
 
         refreshed = await self.get_raw(memory_id)
         assert refreshed is not None
@@ -568,9 +691,9 @@ class SQLiteStore(BaseStore):
 
     async def get_raw(self, memory_id: str) -> MemoryItem | None:
         """Fetch without side effects (no access counter bump)."""
-        conn = self._require_conn()
-        cursor = await conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
-        row = await cursor.fetchone()
+        row = await _fetchone(
+            self._require_conn(), "SELECT * FROM memories WHERE id = ?", (memory_id,)
+        )
         if row is None or not self._scope_allows(row):
             return None
         return _row_to_item(dict(row))
@@ -579,11 +702,11 @@ class SQLiteStore(BaseStore):
         """Delete a memory. Returns False for missing or out-of-scope ids —
         callers must not audit-log a deletion that did not happen."""
         conn = self._require_conn()
-        cursor = await conn.execute(
+        row = await _fetchone(
+            conn,
             "SELECT user_id, tenant_id, agent_id FROM memories WHERE id = ?",
             (memory_id,),
         )
-        row = await cursor.fetchone()
         if row is None or not self._scope_allows(row):
             return False
         async with self._write_lock:
@@ -595,9 +718,13 @@ class SQLiteStore(BaseStore):
                     "UPDATE memories SET status = ?, updated_at = ? WHERE id = ?",
                     (MemoryStatus.DELETED.value, now, memory_id),
                 )
+            revision = await self._bump_revision(conn)
             await conn.commit()
-        if self._index is not None and self._index_loaded:
-            self._index.remove([memory_id])
+
+            def _delta(index: VectorIndex) -> None:
+                index.remove([memory_id])
+
+            self._sync_index_after_write(revision, _delta)
         return True
 
     async def search_by_embedding(
@@ -611,9 +738,24 @@ class SQLiteStore(BaseStore):
         index = await self._ensure_index()
         query = np.asarray(embedding, dtype=np.float32)
         scope_sql, scope_params = self._scope_sql(user_id)
-        # Fetch extra to allow for filter/scope culling.
+        # Scope candidates BEFORE ranking: the allowlist comes from the
+        # authoritative SQL scope, so out-of-scope vectors never compete
+        # for the candidate budget (and a large foreign tenant cannot
+        # starve an in-scope hit).
+        allow_sql = (
+            "SELECT id FROM memories WHERE status = 'ACTIVE' AND embedding IS NOT NULL"
+        )
+        if scope_sql:
+            allow_sql += f" AND {scope_sql}"
+        cursor = await conn.execute(allow_sql, scope_params)
+        candidate_ids = {row["id"] for row in await cursor.fetchall()}
+        if not candidate_ids:
+            return []
+        # Fetch extra only to allow for post-filter culling.
         raw = index.search(
-            query, top_k=top_k * 3 if (filters or scope_sql) else top_k
+            query,
+            top_k=top_k * 3 if filters else top_k,
+            include_ids=candidate_ids,
         )
         if not raw:
             return []
@@ -756,8 +898,7 @@ class SQLiteStore(BaseStore):
         if scope_sql:
             sql += f" AND {scope_sql}"
             params.extend(scope_params)
-        cursor = await conn.execute(sql, params)
-        row = await cursor.fetchone()
+        row = await _fetchone(conn, sql, params)
         return int(row[0]) if row else 0
 
     async def count_any_status(self, user_id: str) -> int:
@@ -769,8 +910,7 @@ class SQLiteStore(BaseStore):
         if scope_sql:
             sql += f" WHERE {scope_sql}"
             params.extend(scope_params)
-        cursor = await conn.execute(sql, params)
-        row = await cursor.fetchone()
+        row = await _fetchone(conn, sql, params)
         return int(row[0]) if row else 0
 
     async def index_ids(self) -> set[str]:
@@ -856,11 +996,11 @@ class SQLiteStore(BaseStore):
                     f"WHERE {where}",
                     [datetime.now(tz=timezone.utc).isoformat(), *params],
                 )
+            revision = await self._bump_revision(conn)
             await conn.commit()
-        # Drop removed ids from the index lazily on next rebuild.
-        if self._index is not None and self._index_loaded:
-            self._index_loaded = False
-            self._index = None
+            # Bulk mutation has no cheap delta: the snapshot is invalidated
+            # and the next read rebuilds at the current revision.
+            self._sync_index_after_write(revision)
         return int(cursor.rowcount or 0)
 
     async def close(self) -> None:

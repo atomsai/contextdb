@@ -36,7 +36,18 @@ class VectorIndex(ABC):
     def add(self, ids: list[str], embeddings: NDArray[np.float32]) -> None: ...
 
     @abstractmethod
-    def search(self, query: NDArray[np.float32], top_k: int = 10) -> list[tuple[str, float]]: ...
+    def search(
+        self,
+        query: NDArray[np.float32],
+        top_k: int = 10,
+        include_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        """Rank the top-k nearest ids.
+
+        ``include_ids`` restricts the candidate set *before* ranking: ids
+        outside the allowlist never compete for the top-k budget, so a
+        large foreign scope cannot starve an in-scope hit.
+        """
 
     @abstractmethod
     def remove(self, ids: list[str]) -> None: ...
@@ -73,14 +84,32 @@ class NumpyIndex(VectorIndex):
             np.vstack([self._vectors, normalized]) if len(self._vectors) else normalized
         )
 
-    def search(self, query: NDArray[np.float32], top_k: int = 10) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query: NDArray[np.float32],
+        top_k: int = 10,
+        include_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
         if len(self._ids) == 0:
+            return []
+        if include_ids is not None and not include_ids:
             return []
         q = _normalize(np.asarray(query, dtype=np.float32).reshape(1, self.dimension))[0]
         scores = self._vectors @ q
+        if include_ids is not None:
+            allowed = np.fromiter(
+                (mid in include_ids for mid in self._ids),
+                dtype=bool,
+                count=len(self._ids),
+            )
+            scores = np.where(allowed, scores, -np.inf)
         k = min(top_k, len(self._ids))
         top_idx = np.argsort(-scores)[:k]
-        return [(self._ids[i], float(scores[i])) for i in top_idx]
+        return [
+            (self._ids[i], float(scores[i]))
+            for i in top_idx
+            if np.isfinite(scores[i])
+        ]
 
     def remove(self, ids: list[str]) -> None:
         drop = set(ids)
@@ -149,9 +178,16 @@ class FAISSIndex(VectorIndex):
         if self._removed_ids:
             self._removed_ids.difference_update(ids)
 
-    def search(self, query: NDArray[np.float32], top_k: int = 10) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query: NDArray[np.float32],
+        top_k: int = 10,
+        include_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
         if not self._ids:
             return []
+        if include_ids is not None:
+            return self._search_allowlist(query, top_k, include_ids)
         # Over-fetch when tombstones are present so filtered-out hits do not
         # starve the final top-k.
         live = len(self._ids) - len(self._removed_ids)
@@ -171,6 +207,33 @@ class FAISSIndex(VectorIndex):
             if len(out) >= top_k:
                 break
         return out
+
+    def _search_allowlist(
+        self,
+        query: NDArray[np.float32],
+        top_k: int,
+        include_ids: set[str],
+    ) -> list[tuple[str, float]]:
+        """Exact cosine over the allowlisted rows only.
+
+        The flat index is already brute-force, so scoring the candidate
+        subset directly keeps results identical while guaranteeing
+        out-of-scope ids never compete for the top-k budget. (FAISS
+        IDSelector support for flat indexes varies by version; this path
+        is version-proof.)
+        """
+        positions = [
+            i
+            for i, mid in enumerate(self._ids)
+            if mid in include_ids and mid not in self._removed_ids
+        ]
+        if not positions:
+            return []
+        snapshot = self._vectors_snapshot()[positions]
+        q = _normalize(np.asarray(query, dtype=np.float32).reshape(1, self.dimension))[0]
+        scores = snapshot @ q
+        order = np.argsort(-scores)[: min(top_k, len(positions))]
+        return [(self._ids[positions[i]], float(scores[i])) for i in order]
 
     def remove(self, ids: list[str]) -> None:
         """Tombstone the given ids. Amortized O(1) per id.

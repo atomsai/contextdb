@@ -96,42 +96,51 @@ class AuditLogger:
         user_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> AuditEntry:
-        conn = self.store._require_conn()
-        cursor = await conn.execute(
-            "SELECT sequence, entry_hash FROM audit_log ORDER BY sequence DESC LIMIT 1"
-        )
-        row = await cursor.fetchone()
-        sequence = (row["sequence"] + 1) if row else 1
-        previous_hash = row["entry_hash"] if row else _GENESIS_HASH
+        # Appending is read-modify-write: the latest entry's hash becomes
+        # the next entry's previous_hash. Concurrent appends must be fully
+        # ordered or the chain forks (duplicate sequences, ambiguous
+        # ordering) — the store's audit_lock serializes in-process callers
+        # and, for networked stores, across processes.
+        async with self.store.audit_lock():
+            conn = self.store._require_conn()
+            cursor = await conn.execute(
+                "SELECT sequence, entry_hash FROM audit_log ORDER BY sequence DESC LIMIT 1"
+            )
+            # fetchall: an unexhausted aiosqlite cursor keeps the statement
+            # "in progress" and a concurrent commit then fails.
+            rows = await cursor.fetchall()
+            row = rows[0] if rows else None
+            sequence = (row["sequence"] + 1) if row else 1
+            previous_hash = row["entry_hash"] if row else _GENESIS_HASH
 
-        entry = AuditEntry(
-            sequence=sequence,
-            operation=operation,
-            memory_id=memory_id,
-            user_id=user_id,
-            details=details or {},
-            previous_hash=previous_hash,
-            entry_hash="",
-        )
-        entry.entry_hash = _compute_hash(entry.canonical_payload())
+            entry = AuditEntry(
+                sequence=sequence,
+                operation=operation,
+                memory_id=memory_id,
+                user_id=user_id,
+                details=details or {},
+                previous_hash=previous_hash,
+                entry_hash="",
+            )
+            entry.entry_hash = _compute_hash(entry.canonical_payload())
 
-        await conn.execute(
-            "INSERT INTO audit_log "
-            "(id, sequence, operation, memory_id, user_id, details, "
-            "previous_hash, entry_hash, timestamp) VALUES (?,?,?,?,?,?,?,?,?)",
-            (
-                entry.id,
-                entry.sequence,
-                entry.operation,
-                entry.memory_id,
-                entry.user_id,
-                json.dumps(entry.details),
-                entry.previous_hash,
-                entry.entry_hash,
-                entry.timestamp.isoformat(),
-            ),
-        )
-        await conn.commit()
+            await conn.execute(
+                "INSERT INTO audit_log "
+                "(id, sequence, operation, memory_id, user_id, details, "
+                "previous_hash, entry_hash, timestamp) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    entry.id,
+                    entry.sequence,
+                    entry.operation,
+                    entry.memory_id,
+                    entry.user_id,
+                    json.dumps(entry.details),
+                    entry.previous_hash,
+                    entry.entry_hash,
+                    entry.timestamp.isoformat(),
+                ),
+            )
+            await conn.commit()
         return entry
 
     async def get_history(

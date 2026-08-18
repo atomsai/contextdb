@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from contextdb.privacy.audit import AuditLogger
@@ -29,3 +31,20 @@ async def test_tampering_is_detected(tmp_store: SQLiteStore) -> None:
     )
     await conn.commit()
     assert not await log.verify_chain()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_never_fork_the_chain(tmp_store: SQLiteStore) -> None:
+    """Concurrent log() calls interleave at every await; the append lock
+    must keep read-tail -> hash -> insert fully serialized."""
+    log = AuditLogger(tmp_store)
+    await log.initialize()
+    await asyncio.gather(
+        *[log.log("CREATE", memory_id=f"m{i}", user_id="u") for i in range(30)]
+    )
+    history = await log.get_history(limit=100)
+    sequences = [e.sequence for e in history]
+    assert sorted(sequences) == list(range(1, 31)), (
+        f"forked or lost appends: {sorted(sequences)}"
+    )
+    assert await log.verify_chain()
