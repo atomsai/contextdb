@@ -49,7 +49,8 @@ Subclass `contextdb.store.base.BaseStore`. You need `initialize`, `add`,
 `count`, and `close`. The client also calls `get_raw`, `list_by_slot`,
 `list_by_entity`, `list_pending_consolidation`, `iter_memories`,
 `delete_older_than`, `count_any_status`, `count_by_type`, `index_ids`,
-and `slot_lock`. Copy those signatures from `SQLiteStore` / `PostgresStore`.
+`slot_lock`, and `audit_lock`. Copy those signatures from `SQLiteStore` /
+`PostgresStore`.
 
 Scope rules you must keep:
 
@@ -57,3 +58,17 @@ Scope rules you must keep:
 * An unscoped store filters by the per-call `user_id`.
 * Writes stamp `item.user_id`.
 * Slot locks are keyed on `(user, tenant, entity, attribute)`.
+
+Concurrency and recall rules you must keep:
+
+* `slot_lock` and `audit_lock` must serialize not just within one event
+  loop but across every process that shares the database (the Postgres
+  store uses transaction-scoped advisory locks). The audit chain forks
+  silently without this.
+* `search_by_embedding` must restrict vector candidates to the requested
+  scope *before* ranking — rank-then-filter leaks the candidate budget
+  to foreign tenants. Custom `VectorIndex` implementations must accept
+  `search(query, top_k, include_ids=None)`.
+* If you keep a process-local index or cache, it must track the store
+  revision (`contextdb_meta`) so a write from another process is visible
+  to the next search.

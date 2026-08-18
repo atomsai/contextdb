@@ -70,12 +70,17 @@ async def get_entity(name) -> dict
 ### Trust
 
 * `db.trust_policy` — `TrustPolicy` (`TrustPolicy.hospital()`, `.restaurant()`)
-* `contextdb.integrations.act.VerifyBeforeAct(db).decide(query)` → `act` / `ask` / `abstain`
+* `contextdb.integrations.act.VerifyBeforeAct(db).decide(query, *, user_id=None)` → `act` / `ask` / `abstain`;
+  `confirm_pending(memory_ids, *, user_id=None)` writes back the yes. Both take
+  an additive per-call `user_id` for shared clients.
 
 ### Privacy
 
 * `db.privacy` — `RetentionManager`
-* `db.audit` — `AuditLogger | None` (SEARCH + DECIDE + FORGET are chained)
+* `db.audit` — `AuditLogger | None` (SEARCH + DECIDE + FORGET are chained;
+  only the PII-processed form of a query is ever logged)
+* `pii_action="encrypt"` requires `pii_encryption_key` (or
+  `CONTEXTDB_PII_KEY`) and fails closed without one
 
 ### Multi-agent
 
