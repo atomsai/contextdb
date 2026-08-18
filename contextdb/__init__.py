@@ -30,7 +30,7 @@ from contextdb.core.models import (
 from contextdb.core.policy import TrustPolicy
 from contextdb.pool import ContextDBPool
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Clock",

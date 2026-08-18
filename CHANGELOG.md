@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-08-18
+
 Host API scope hardening:
 
 - Every non-health HTTP route now runs the configured authentication,
