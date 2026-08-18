@@ -33,6 +33,7 @@ async def search(query, top_k=10, memory_type=None, time_range=None,
                  min_confidence=None, include_third_party=True) -> list[MemoryItem]
     # Queries are PII-redacted before embed. compose hops sibling slots.
 async def confirm(memory_id, user_id=None) -> MemoryItem
+    # With a resolved user scope, a foreign memory_id raises MemoryNotFoundError.
 async def get(memory_id) -> MemoryItem | None
 async def update(memory_id, content=None, metadata=None) -> MemoryItem
 async def delete(memory_id, hard=False) -> None
@@ -42,6 +43,8 @@ async def add_fast_many(contents, *, user_id=None) -> list[MemoryItem]
 async def pending_confirmations(user_id=None, limit=100) -> list[MemoryItem]
 async def forget(user_id=None, entity=None, older_than=None, *,
                  memory_id=None, attribute=None) -> int
+    # A foreign memory_id under a resolved user scope raises
+    # MemoryNotFoundError; a missing one still returns 0.
 async def forget_user(user_id) -> int
 db.on(event, hook)  # write, recall, confirm, forget, injection_suspect, embed_fallback
 async def verify_forgotten(user_id) -> bool
@@ -85,6 +88,14 @@ async def get_entity(name) -> dict
 
 `MemoryItem`, `Edge`, `Entity`, `RetentionPolicy`, `PIIAnnotation`,
 `MemoryType`, `MemoryStatus`, `PIIType`, `TrustPolicy`, `MemoryExplanation`.
+
+## Errors
+
+`ContextDBError` is the base. `MemoryNotFoundError`, `StorageError`,
+`PrivacyError`, `ConfigError` (+ `SourceRequiredError`),
+`UnauthorizedError` (host API auth failed — HTTP 401), and
+`ScopeConflictError` (request scope disagrees with the authenticated
+scope — HTTP 400) derive from it.
 
 Load-bearing `MemoryItem` fields for the trust model: `epistemic_source`,
 `corroborated_by`, `confirmed`, `contested`, `action_relevant`,

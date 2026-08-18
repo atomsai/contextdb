@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+Host API scope hardening:
+
+- Every non-health HTTP route now runs the configured authentication,
+  including `/v1/trust_policy` and `/mcp`.
+- An authenticated `user_id` (from `auth_hook`) can no longer be
+  overridden by the JSON body, `X-ContextDB-User` header, query string,
+  or MCP tool arguments; a conflict is a clear 400 (`ScopeConflictError`)
+  instead of a silent pick.
+- `/mcp` propagates the authenticated scope into every tool call.
+- ID-based `confirm` / `forget` verify the target belongs to the resolved
+  user scope; a foreign `memory_id` raises `MemoryNotFoundError`,
+  indistinguishable from a missing one. Same guarantee on SQLite and
+  Postgres stores.
+- Anonymous loopback serving is unchanged and documented as *not* an
+  authorization boundary.
+
 Host-adoption work from serviceagent integration:
 
 - `contextdb serve --http` (`pycontextdb[serve]`) — JSON API + `/mcp`, Bearer token, `auth_hook`.
