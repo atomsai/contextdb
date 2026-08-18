@@ -26,7 +26,12 @@ from typing import TYPE_CHECKING, Any
 
 from contextdb.core.clock import Clock, utc_now
 from contextdb.core.config import ContextDBConfig
-from contextdb.core.exceptions import ConfigError, ContextDBError, SourceRequiredError
+from contextdb.core.exceptions import (
+    ConfigError,
+    ContextDBError,
+    MemoryNotFoundError,
+    SourceRequiredError,
+)
 from contextdb.core.models import (
     EpistemicSource,
     MemoryExplanation,
@@ -758,6 +763,10 @@ class ContextDB:
         fact: ``confirmed=True``, first-party, high confidence, speaker
         added to ``corroborated_by``. Under any stock :class:`TrustPolicy`
         the fact then passes ``recall_for_action``.
+
+        With a resolved user scope, a ``memory_id`` owned by a different
+        user raises :class:`MemoryNotFoundError` — a request can never
+        confirm a known foreign memory.
         """
         uid = self._resolve_user(user_id)
         await self._ensure_init()
@@ -980,12 +989,22 @@ class ContextDB:
 
         ``memory_id`` deletes one row. ``entity`` + ``attribute`` deletes the
         current occupants of that slot (``forget my address``).
+
+        With a resolved user scope, a ``memory_id`` that belongs to a
+        different user raises :class:`MemoryNotFoundError` — a known foreign
+        id is rejected, never silently deleted or no-op'd. An unscoped
+        client (no user anywhere) keeps the legacy local behavior and is
+        not an authorization boundary.
         """
         uid = self._resolve_user(user_id)
         await self._ensure_init()
         store = self._require_store()
 
         if memory_id is not None:
+            if uid is not None:
+                target = await store.get_raw(memory_id)
+                if target is not None and target.user_id != uid:
+                    raise MemoryNotFoundError(memory_id)
             removed = await store.delete(memory_id, hard=True)
             count = 1 if removed else 0
             if removed and self._audit is not None:

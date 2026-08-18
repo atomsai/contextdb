@@ -10,17 +10,38 @@ Auth: set ``CONTEXTDB_SERVE_TOKEN`` or pass ``token=``. Requests must send
 ``Authorization: Bearer <token>``. Bind to a loopback address if you run
 without a token. Pass ``auth_hook`` to mint user/tenant from your own
 gateway headers.
+
+Scope rules (every route except ``/health`` / ``/v1/health``):
+
+* When ``auth_hook`` returns ``user_id``, that authenticated scope wins.
+  A conflicting ``user_id`` in the JSON body, the ``X-ContextDB-User``
+  header, the query string, or MCP tool arguments is rejected with 400 —
+  never silently selected.
+* ``/mcp`` injects the resolved scope into every tool call, so an
+  authenticated caller cannot recall, confirm, or forget another user's
+  memories through tool arguments.
+* ID-based ``confirm`` / ``forget`` verify the target belongs to the
+  resolved scope; a foreign id fails exactly like a missing one.
+* With no authenticated user (``allow_anonymous`` loopback), requests may
+  still pass ``user_id`` per call. That is a local convenience, NOT an
+  authorization boundary — see docs/multi_tenant.md.
 """
 
 from __future__ import annotations
 
 import inspect
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from contextdb.client import ContextDB
-from contextdb.core.exceptions import ConfigError, ContextDBError, SourceRequiredError
+from contextdb.core.exceptions import (
+    ConfigError,
+    ContextDBError,
+    ScopeConflictError,
+    SourceRequiredError,
+    UnauthorizedError,
+)
 from contextdb.core.models import MemoryItem
 from contextdb.mcp import ContextDBMCPServer
 
@@ -50,6 +71,12 @@ def _json_response(status: int, payload: dict[str, Any]) -> Any:
     from starlette.responses import JSONResponse
 
     return JSONResponse(payload, status_code=status)
+
+
+def _error_response(exc: ContextDBError) -> Any:
+    """Map client-visible errors: 401 for auth failures, 400 otherwise."""
+    code = 401 if isinstance(exc, UnauthorizedError) else 400
+    return _json_response(code, {"error": str(exc)})
 
 
 async def _read_json(request: Any) -> dict[str, Any]:
@@ -97,7 +124,7 @@ def create_app(
         if resolved_token:
             auth = headers.get("authorization", "")
             if auth != f"Bearer {resolved_token}":
-                raise ConfigError("unauthorized")
+                raise UnauthorizedError("unauthorized")
         elif not allow_anonymous:
             raise ConfigError(
                 "Refusing anonymous HTTP. Set CONTEXTDB_SERVE_TOKEN, pass "
@@ -105,18 +132,71 @@ def create_app(
             )
         return {}
 
-    def _user_id(request: Request, body: dict[str, Any], auth: dict[str, Any]) -> str | None:
-        return (
-            (auth.get("user_id") if isinstance(auth.get("user_id"), str) else None)
-            or body.get("user_id")
-            or request.headers.get("x-contextdb-user")
-            or client.user_id
-        )
+    def _resolve_scope(
+        request: Request,
+        body: dict[str, Any],
+        auth: dict[str, Any],
+        *,
+        extra: Iterable[Any] = (),
+    ) -> str | None:
+        """Resolve the one user scope a request runs under.
+
+        An authenticated ``user_id`` (from ``auth_hook``) cannot be
+        overridden: a conflicting ``user_id`` in the JSON body, the
+        ``X-ContextDB-User`` header, the query string, or MCP tool
+        arguments raises :class:`ScopeConflictError` (400) instead of
+        silently selecting one. Without an authenticated user, the
+        request-supplied scopes must at least agree with each other.
+        Returns ``None`` for anonymous local usage, which is a convenience
+        for loopback deployments, not an authorization boundary.
+        """
+        auth_user_raw = auth.get("user_id")
+        auth_user = auth_user_raw if isinstance(auth_user_raw, str) and auth_user_raw else None
+
+        supplied: list[tuple[str, str]] = []
+
+        def _collect(where: str, value: Any) -> None:
+            if value is None:
+                return
+            if not isinstance(value, str) or not value:
+                raise ConfigError(f"user_id from {where} must be a non-empty string")
+            supplied.append((where, value))
+
+        _collect("JSON body", body.get("user_id"))
+        _collect("X-ContextDB-User header", request.headers.get("x-contextdb-user"))
+        _collect("query string", request.query_params.get("user_id"))
+        for value in extra:
+            _collect("tool arguments", value)
+
+        if auth_user is not None:
+            for where, value in supplied:
+                if value != auth_user:
+                    raise ScopeConflictError(
+                        f"user_id {value!r} from {where} conflicts with the "
+                        f"authenticated user {auth_user!r}. Drop the override "
+                        "or authenticate as that user."
+                    )
+            return auth_user
+        distinct = {value for _, value in supplied}
+        if len(distinct) > 1:
+            detail = ", ".join(f"{where}={value!r}" for where, value in supplied)
+            raise ScopeConflictError(
+                f"Conflicting user_id values in one request ({detail}). Send exactly one."
+            )
+        if distinct:
+            return next(iter(distinct))
+        return client.user_id
 
     async def health(_request: Request) -> Any:
         return _json_response(200, {"ok": True, "service": "contextdb"})
 
-    async def trust_policy(_request: Request) -> Any:
+    async def trust_policy(request: Request) -> Any:
+        # Not a health route: it runs the configured authentication like
+        # every other route.
+        try:
+            await _authorize(request, {})
+        except ContextDBError as exc:
+            return _error_response(exc)
         return _json_response(200, client.trust_policy.model_dump())
 
     async def remember(request: Request) -> Any:
@@ -127,7 +207,7 @@ def create_app(
                 raise SourceRequiredError(
                     "remember requires source: user_stated | agent_inferred | third_party"
                 )
-            uid = _user_id(request, body, auth)
+            uid = _resolve_scope(request, body, auth)
             item = await client.factual.add(
                 str(body["content"]),
                 source=body.get("source"),
@@ -141,28 +221,26 @@ def create_app(
         except SourceRequiredError as exc:
             return _json_response(400, {"error": str(exc)})
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     async def remember_many(request: Request) -> Any:
         body = await _read_json(request)
         try:
             auth = await _authorize(request, body)
-            uid = _user_id(request, body, auth)
+            uid = _resolve_scope(request, body, auth)
             items_in = body.get("items") or body.get("contents") or []
             if not isinstance(items_in, list):
                 raise ConfigError("items must be a list")
             stored = await client.factual.add_many(items_in, user_id=uid)
             return _json_response(200, {"memories": [_serialize(m) for m in stored]})
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     async def recall(request: Request) -> Any:
         body = await _read_json(request)
         try:
             auth = await _authorize(request, body)
-            uid = _user_id(request, body, auth)
+            uid = _resolve_scope(request, body, auth)
             items = await client.factual.recall(
                 str(body["query"]),
                 top_k=int(body.get("top_k", 5)),
@@ -183,14 +261,13 @@ def create_app(
                 },
             )
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     async def recall_for_action(request: Request) -> Any:
         body = await _read_json(request)
         try:
             auth = await _authorize(request, body)
-            uid = _user_id(request, body, auth)
+            uid = _resolve_scope(request, body, auth)
             items = await client.factual.recall_for_action(
                 str(body["query"]),
                 top_k=int(body.get("top_k", 5)),
@@ -198,36 +275,33 @@ def create_app(
             )
             return _json_response(200, {"memories": [_serialize(m) for m in items]})
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     async def confirm(request: Request) -> Any:
         body = await _read_json(request)
         try:
             auth = await _authorize(request, body)
-            uid = _user_id(request, body, auth)
+            uid = _resolve_scope(request, body, auth)
             item = await client.factual.confirm(str(body["memory_id"]), user_id=uid)
             return _json_response(200, {"memory": _serialize(item)})
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     async def pending(request: Request) -> Any:
         body = await _read_json(request) if request.method == "POST" else {}
         try:
             auth = await _authorize(request, body)
-            uid = _user_id(request, body, auth) or request.query_params.get("user_id")
+            uid = _resolve_scope(request, body, auth)
             items = await client.factual.pending_confirmations(user_id=uid)
             return _json_response(200, {"memories": [_serialize(m) for m in items]})
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     async def forget(request: Request) -> Any:
         body = await _read_json(request)
         try:
             auth = await _authorize(request, body)
-            uid = _user_id(request, body, auth)
+            uid = _resolve_scope(request, body, auth)
             if body.get("memory_id"):
                 deleted = await client.forget(
                     user_id=uid,
@@ -239,32 +313,36 @@ def create_app(
                     entity=str(body["entity"]),
                     attribute=str(body["attribute"]),
                 )
-            elif body.get("user_id") or uid:
-                target = str(body.get("user_id") or uid)
-                deleted = await client.forget_user(target)
-                verified = await client.verify_forgotten(target)
+            elif uid:
+                # Whole-user erasure targets the resolved scope only — the
+                # request body can never retarget it at another user.
+                deleted = await client.forget_user(uid)
+                verified = await client.verify_forgotten(uid)
                 return _json_response(200, {"deleted": deleted, "verified": verified})
             else:
                 raise ConfigError("forget requires memory_id, entity+attribute, or user_id")
             return _json_response(200, {"deleted": deleted})
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     async def mcp_call(request: Request) -> Any:
         """JSON-RPC-ish MCP tools/call for hosts that already speak MCP names."""
         body = await _read_json(request)
         try:
-            await _authorize(request, body)
+            auth = await _authorize(request, body)
             name = str(body.get("name") or body.get("method") or "")
             arguments = body.get("arguments") or body.get("params") or {}
             if not isinstance(arguments, dict):
                 raise ConfigError("arguments must be an object")
+            # The resolved scope is propagated into every tool call; a
+            # conflicting user_id inside the tool arguments is a 400.
+            uid = _resolve_scope(request, body, auth, extra=[arguments.get("user_id")])
+            if uid is not None:
+                arguments = {**arguments, "user_id": uid}
             result = await mcp.call_tool(name, arguments)
             return _json_response(200, result)
         except ContextDBError as exc:
-            code = 401 if str(exc) == "unauthorized" else 400
-            return _json_response(code, {"error": str(exc)})
+            return _error_response(exc)
 
     routes = [
         Route("/health", health, methods=["GET"]),

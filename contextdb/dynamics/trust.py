@@ -297,11 +297,16 @@ class TrustEngine:
         This is the writeback the verify-before-act loop was missing: the
         agent asked, the user said yes, and now the fact is trusted under
         any policy that honours ``confirmed``.
+
+        When ``user_id`` is supplied, the target must belong to that user;
+        a foreign id raises :class:`MemoryNotFoundError`, indistinguishable
+        from a missing one. ``user_id=None`` is the unscoped local/admin
+        context and is not an authorization boundary.
         """
         from contextdb.core.exceptions import MemoryNotFoundError
 
         item = await self.store.get_raw(memory_id)
-        if item is None:
+        if item is None or (user_id is not None and item.user_id != user_id):
             raise MemoryNotFoundError(memory_id)
         now = self.clock()
         speakers = list(item.corroborated_by)

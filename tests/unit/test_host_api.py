@@ -8,7 +8,11 @@ import pytest
 
 import contextdb
 from contextdb.core.config import ContextDBConfig
-from contextdb.core.exceptions import ConfigError, SourceRequiredError
+from contextdb.core.exceptions import (
+    ConfigError,
+    MemoryNotFoundError,
+    SourceRequiredError,
+)
 from contextdb.pool import ContextDBPool
 
 
@@ -134,6 +138,70 @@ async def test_add_many_and_recall_filters(tmp_path: Path) -> None:
         hits = await db.factual.recall("email", entity="caller", min_confidence=0.8)
         assert hits
         assert all(h.entity_key == "caller" for h in hits)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_foreign_memory_id(tmp_path: Path) -> None:
+    """A shared client must never confirm a known foreign memory ID."""
+    db = contextdb.init(config=_cfg(tmp_path))
+    try:
+        item = await db.factual.add(
+            "Alice PIN is 7788",
+            source="user_stated",
+            confidence=0.5,
+            action_relevant=True,
+            entity="account",
+            attribute="pin",
+            user_id="alice",
+        )
+        with pytest.raises(MemoryNotFoundError):
+            await db.factual.confirm(item.id, user_id="bob")
+        still = await db.get(item.id)
+        assert still is not None
+        assert still.confirmed is False
+
+        confirmed = await db.factual.confirm(item.id, user_id="alice")
+        assert confirmed.confirmed is True
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_forget_rejects_foreign_memory_id(tmp_path: Path) -> None:
+    """A shared client must never delete a known foreign memory ID — and a
+    missing id keeps the legacy ``0`` return."""
+    db = contextdb.init(config=_cfg(tmp_path))
+    try:
+        item = await db.factual.add(
+            "Alice PIN is 7788", source="user_stated", user_id="alice"
+        )
+        with pytest.raises(MemoryNotFoundError):
+            await db.forget(user_id="bob", memory_id=item.id)
+        assert await db.get(item.id) is not None
+
+        assert await db.forget(user_id="bob", memory_id="no-such-id") == 0
+        assert await db.forget(user_id="alice", memory_id=item.id) == 1
+        assert await db.get(item.id) is None
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_unscoped_local_usage_has_no_scope_checks(tmp_path: Path) -> None:
+    """No user anywhere: confirm/forget by id work as before. This local
+    usage is documented as NOT an authorization boundary."""
+    db = contextdb.init(config=_cfg(tmp_path))
+    try:
+        item = await db.factual.add(
+            "local fact", source="user_stated", confidence=0.5, action_relevant=True
+        )
+        assert item.user_id is None
+        confirmed = await db.factual.confirm(item.id)
+        assert confirmed.confirmed is True
+        assert await db.forget(memory_id=item.id) == 1
+        assert await db.get(item.id) is None
     finally:
         await db.close()
 

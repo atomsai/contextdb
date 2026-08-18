@@ -12,8 +12,10 @@ from contextdb.core.exceptions import (
     ContextDBError,
     MemoryNotFoundError,
     PrivacyError,
+    ScopeConflictError,
     SourceRequiredError,
     StorageError,
+    UnauthorizedError,
 )
 from contextdb.core.models import (
     Edge,
@@ -48,9 +50,11 @@ __all__ = [
     "PIIType",
     "PrivacyError",
     "RetentionPolicy",
+    "ScopeConflictError",
     "SourceRequiredError",
     "StorageError",
     "TrustPolicy",
+    "UnauthorizedError",
     "__version__",
     "init",
     "utc_now",
