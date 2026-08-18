@@ -31,3 +31,20 @@ class ConfigError(ContextDBError):
 
 class SourceRequiredError(ConfigError):
     """Raised when a write omits epistemic ``source`` and the host requires it."""
+
+
+class UnauthorizedError(ContextDBError):
+    """Raised when a host API request fails configured authentication.
+
+    The HTTP layer maps this to 401; every other :class:`ContextDBError`
+    maps to 400.
+    """
+
+
+class ScopeConflictError(ContextDBError):
+    """Raised when a request carries a user scope that conflicts with the
+    authenticated scope (or two request-supplied scopes disagree).
+
+    Silently picking one of two conflicting scopes is how cross-user writes
+    happen, so the host APIs reject the request instead (HTTP 400).
+    """
