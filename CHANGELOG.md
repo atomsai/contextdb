@@ -2,7 +2,33 @@
 
 ## Unreleased
 
-Host-adoption work from serviceagent integration:
+Decision-layer and PII correctness:
+
+- `VerifyBeforeAct.decide()` / `confirm_pending()` accept an additive
+  per-call `user_id=` for shared clients; a scoped client still rejects a
+  foreign one.
+- SEARCH and DECIDE audit entries now persist only the PII-processed form
+  of the query — the append-only chain must never hold raw PII.
+- `pii_action="encrypt"` fails closed: without a key, `PIIDetector`
+  raises `ConfigError` instead of degrading to redact, and encryption
+  mode can never persist plaintext annotation originals.
+
+Postgres and audit concurrency:
+
+- Vector candidates are scoped by SQL *before* ranking — a large foreign
+  scope can no longer starve an in-scope hit out of the candidate budget.
+- The process-local vector index tracks a global store revision; a write
+  from another instance or process forces a rebuild before the next
+  search (stale reads are no longer served indefinitely).
+- Slot operations on Postgres serialize across processes via a
+  transaction-scoped advisory lock; audit-chain appends serialize
+  in-process (SQLite) and cross-process (Postgres), so the hash chain
+  cannot fork.
+- Real Postgres concurrent-worker tests cover corroboration, slot
+  supersede, audit-chain integrity, and cross-worker recall
+  (`CONTEXTDB_TEST_POSTGRES_URL`).
+
+Host-adoption work:
 
 - `contextdb serve --http` (`pycontextdb[serve]`) — JSON API + `/mcp`, Bearer token, `auth_hook`.
 - Per-call `user_id=` on add/recall/confirm/forget. Shared `init()` is the multi-tenant path; `ContextDBPool` is LRU if you still need one client per user.
@@ -41,10 +67,8 @@ GitHub `main`: memory an agent can act on without treating a wish as a fact.
 - MCP tools: `remember` / `recall` / `recall_for_action` / `forget` / `confirm`.
 - In-repo fabrication bake-off: `python benchmarks/trust_bakeoff.py`
   (trust arm vs our own untyped control — not a live Mem0/Zep run).
-- Open-core governance: [OPEN_CORE.md](OPEN_CORE.md),
-  [COMMERCIAL.md](COMMERCIAL.md), CLA, CODEOWNERS, package-boundary CI,
-  and release inspection. Code through `2554dae` remains Apache-2.0.
-  Cloud is a private repo that depends on this SDK, never the reverse.
+- Contribution and release hygiene: CLA, CODEOWNERS, and release
+  inspection. Code through `2554dae` remains Apache-2.0.
 
 ### Fixed
 

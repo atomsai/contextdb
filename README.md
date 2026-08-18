@@ -495,7 +495,7 @@ Numbers above are from a MacBook-class laptop with no FAISS. Rerun `python bench
 
 ## Why not just use...
 
-**Mem0?** Their graph intelligence is a commercial add-on. ContextDB ships experiential memory, working-memory paging, and the trust bar in the Apache SDK — hosted multi-tenant operations are a separate Cloud product ([OPEN_CORE.md](OPEN_CORE.md)).
+**Mem0?** Their graph intelligence is a commercial add-on. ContextDB ships experiential memory, working-memory paging, and the trust bar in the Apache SDK.
 
 **Zep?** Strong bitemporal knowledge graphs. But no experiential memory, no working memory paging, no learned retrieval policies. Scope is narrower than a full memory OS.
 
@@ -555,16 +555,13 @@ db = contextdb.init(storage_url="postgresql://...")
 See [docs/serve.md](docs/serve.md), [docs/multi_tenant.md](docs/multi_tenant.md),
 and [docs/trust_policy.md](docs/trust_policy.md).
 
-## Open core
+## License and attribution
 
-The SDK, trust model, and evals are Apache-2.0. Hosted multi-tenant
-operations live in a private `contextdb-cloud` repo that depends on this
-package — this package never depends on cloud. Entitlements are
-server-side. See [OPEN_CORE.md](OPEN_CORE.md) and
-[COMMERCIAL.md](COMMERCIAL.md). **ContextDB** is a trademark; the Apache
-license is not a trademark license. A public credit line is optional —
-if you want one, use **Built with ContextDB** linking to this
-repository. See [COMMERCIAL.md](COMMERCIAL.md#attribution-optional).
+The SDK, trust model, and evals are Apache-2.0 — everything described in
+this README ships in this tree, with no feature gates. **ContextDB** is a
+trademark; the Apache license is not a trademark license. A public credit
+line is optional — if you want one, use **Built with ContextDB** linking
+to this repository.
 
 ## Contributing
 

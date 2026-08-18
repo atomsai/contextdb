@@ -3,7 +3,7 @@
 Prefer a single unscoped ``init()`` and ``user_id=`` on each call. Use this
 pool only when a host cannot change those call sites and still needs one
 ``ContextDB`` per user. Each client holds a store connection and an
-in-process vector index — that is the cost the serviceagent team asked about.
+in-process vector index — that per-user cost is what the LRU bound is for.
 """
 
 from __future__ import annotations

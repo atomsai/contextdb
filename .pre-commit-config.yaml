@@ -8,7 +8,7 @@
 
 repos:
   # Secret scanning — the reason this file exists. Gitleaks scans the
-  # staged diff for tokens (PyPI, GitHub, AWS, Stripe, Slack, generic
+  # staged diff for tokens (PyPI, GitHub, AWS, Slack, generic
   # entropy-high strings, ...). First run auto-downloads the binary.
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.0

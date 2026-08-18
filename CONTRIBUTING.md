@@ -1,9 +1,8 @@
 # Contributing to ContextDB
 
 Thank you for wanting to improve ContextDB. This repository is the
-**open-core SDK**. Read [OPEN_CORE.md](OPEN_CORE.md) before you write
-code. If the change belongs in hosted multi-tenant operations, it does
-not belong here.
+Apache-2.0 ContextDB SDK: everything here works offline, with no feature
+gates.
 
 ## What we accept here
 
@@ -12,9 +11,9 @@ evals. Evals win over prose: `pytest tests/evals/ -v`.
 
 We do **not** accept:
 
-- Cloud control-plane, billing, SSO, or entitlement code
-- Local license keys or `if paid:` branches
-- Imports of `contextdb_cloud` or any private cloud package
+- Feature gates of any kind — no license keys, no `if paid:` branches,
+  no flags that only work against a hosted service
+- Imports of packages outside the declared dependencies
 - Changes that loosen PII-before-embed or the hash-chained audit log
 
 ## Contributor License Agreement
@@ -22,10 +21,10 @@ We do **not** accept:
 Trivial changes (typos, broken links, comment nits) do not need a CLA.
 
 **Substantial contributions** (new or material code, evals, or docs that
-are not typo-fixes) require a signed CLA **before** merge. The CLA lets
-Atoms AI relicense *future* contributions if dual-licensing ever
-matters. It does not change the Apache-2.0 grant on code already
-public through `2554dae`.
+are not typo-fixes) require a signed CLA **before** merge. The CLA grants
+the project broad rights to distribute your contribution, including under
+different license terms; code already released under Apache-2.0 stays
+Apache-2.0.
 
 1. Read [legal/CLA-individual.md](legal/CLA-individual.md) (or
    [legal/CLA-entity.md](legal/CLA-entity.md) if you contribute on
@@ -50,7 +49,6 @@ pre-commit install
 ruff check .
 mypy contextdb --strict
 pytest
-python scripts/check_open_core.py
 ```
 
 Do not break `contextdb.init`, `factual.add`, `factual.recall`, or
@@ -58,9 +56,8 @@ Do not break `contextdb.init`, `factual.add`, `factual.recall`, or
 
 ## Review
 
-[`.github/CODEOWNERS`](.github/CODEOWNERS) routes reviews. Governance
-files (`OPEN_CORE.md`, `COMMERCIAL.md`, `LICENSE`, `legal/`, workflows)
-need a maintainer.
+[`.github/CODEOWNERS`](.github/CODEOWNERS) routes reviews. `LICENSE`,
+`NOTICE`, `legal/`, and the workflows need a maintainer.
 
 ## License of your contribution
 

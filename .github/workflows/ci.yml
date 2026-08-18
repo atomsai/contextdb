@@ -62,17 +62,3 @@ jobs:
 
       - name: Run tests
         run: pytest
-
-  open-core:
-    name: Open-core boundary
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Package-boundary and accidental-publication checks
-        run: python scripts/check_open_core.py

@@ -48,8 +48,7 @@ prose and evals disagree, the evals win.
 
 ## License
 
-Apache 2.0. Open-core: the SDK and trust evals stay public; hosted
-operations are a separate Cloud product. See [OPEN_CORE.md](../OPEN_CORE.md)
-and [COMMERCIAL.md](../COMMERCIAL.md). ContextDB is a trademark. A
-public credit line is optional; the preferred form is in
-[COMMERCIAL.md](../COMMERCIAL.md#attribution-optional).
+Apache 2.0. The SDK and trust evals are fully public; nothing in this
+tree is gated behind a hosted offering. ContextDB is a trademark. A
+public credit line is optional; if you want one, use **Built with
+ContextDB** linking to the repository.

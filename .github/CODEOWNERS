@@ -1,14 +1,12 @@
-# Maintainer review on the open-core SDK and on anything that could
-# move the Apache / Cloud boundary or ship a bad PyPI artifact.
+# Maintainer review on the SDK and on anything that could ship a bad
+# PyPI artifact.
 # Username: https://github.com/gaufire
 
 * @gaufire
 
 /.github/ @gaufire
 /legal/ @gaufire
-/scripts/check_open_core.py @gaufire
-/OPEN_CORE.md @gaufire
-/COMMERCIAL.md @gaufire
+/scripts/ @gaufire
 /NOTICE @gaufire
 /LICENSE @gaufire
 /CONTRIBUTING.md @gaufire
