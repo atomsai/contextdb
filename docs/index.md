@@ -49,6 +49,9 @@ prose and evals disagree, the evals win.
 ## License
 
 Apache 2.0. The SDK and trust evals are fully public; nothing in this
-tree is gated behind a hosted offering. ContextDB is a trademark. A
-public credit line is optional; if you want one, use **Built with
-ContextDB** linking to the repository.
+tree is gated behind a hosted offering. ContextDB is a trademark;
+reselling it as a service (or as part of one) under the ContextDB name
+requires a commercial agreement — see
+[COMMERCIAL.md](../COMMERCIAL.md) (contextdb@atomsai.com). A public
+credit line is optional; if you want one, use **Built with ContextDB**
+linking to the repository.

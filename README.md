@@ -559,9 +559,12 @@ and [docs/trust_policy.md](docs/trust_policy.md).
 
 The SDK, trust model, and evals are Apache-2.0 — everything described in
 this README ships in this tree, with no feature gates. **ContextDB** is a
-trademark; the Apache license is not a trademark license. A public credit
-line is optional — if you want one, use **Built with ContextDB** linking
-to this repository.
+trademark; the Apache license is not a trademark license. Reselling
+ContextDB as a service, or as part of one, under the ContextDB name or
+branding requires a commercial agreement with Atoms AI — contact
+contextdb@atomsai.com (see [COMMERCIAL.md](COMMERCIAL.md)). A public
+credit line is optional — if you want one, use **Built with ContextDB**
+linking to this repository.
 
 ## Contributing
 
