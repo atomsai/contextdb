@@ -410,6 +410,20 @@ class ContextDB:
         kinds = sorted({a.pii_type.value.lower() for a in annotations})
         return f"user {' '.join(kinds)} on file. {processed}"
 
+    def _redact_for_audit(self, text: str) -> str:
+        """PII-process free text before it enters the append-only audit log.
+
+        The hash-chained log is never rewritten — that is the point of the
+        chain — so a raw query containing PII must never reach it.
+        """
+        if self._pii is None:
+            # Audit redaction must not depend on lazy-init ordering.
+            self._pii = PIIDetector(
+                action=self.config.pii_action,
+                encryption_key=self.config.pii_encryption_key,
+            )
+        return self._pii.process(text)[0]
+
     async def add(
         self,
         content: str,
@@ -601,7 +615,9 @@ class ContextDB:
                 operation="SEARCH",
                 user_id=uid,
                 details={
-                    "query": query,
+                    # The audit chain is append-only; only the redacted
+                    # form of the query may be persisted.
+                    "query": processed_query,
                     "hits": len(items),
                     "returned_ids": [m.id for m in items],
                     "as_of": moment.isoformat(),

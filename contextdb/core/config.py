@@ -75,8 +75,9 @@ class ContextDBConfig(BaseSettings):
         default=None,
         description=(
             "Secret used when pii_action='encrypt'. Falls back to "
-            "CONTEXTDB_PII_KEY env var. Without either, encrypt degrades "
-            "to redact (originals unrecoverable)."
+            "CONTEXTDB_PII_KEY env var. Without either, initialization "
+            "raises ConfigError — encrypt fails closed rather than "
+            "storing plaintext annotation originals."
         ),
     )
     retention_ttl_days: int | None = Field(

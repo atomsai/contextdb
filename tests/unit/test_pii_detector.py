@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from contextdb.core.exceptions import ConfigError
 from contextdb.core.models import PIIType
 from contextdb.privacy.pii_detector import PIIDetector
 
@@ -49,6 +50,19 @@ def test_pii_encrypt_decrypt_roundtrip() -> None:
     assert det.decrypt(by_type[PIIType.PHONE]) == "415-555-1212"
 
 
+def test_pii_encrypt_annotations_never_hold_plaintext() -> None:
+    """In encryption mode the annotation originals must be ciphertext —
+    the persisted store row must not carry the plaintext span."""
+    det = PIIDetector(action="encrypt", encryption_key="test-secret-abc123")
+    _, anns = det.process("SSN 123-45-6789, email alex@example.com, card 4111 1111 1111 1111")
+    assert len(anns) == 3
+    for ann in anns:
+        assert ann.original not in {"123-45-6789", "alex@example.com", "4111 1111 1111 1111"}
+        assert "123-45-6789" not in ann.original
+        assert "alex@example.com" not in ann.original
+        assert "4111" not in ann.original
+
+
 def test_pii_decrypt_requires_key() -> None:
     det = PIIDetector(action="redact")
     _, anns = det.process("email foo@bar.com")
@@ -56,14 +70,18 @@ def test_pii_decrypt_requires_key() -> None:
         det.decrypt(anns[0])
 
 
-def test_pii_encrypt_without_key_falls_back_to_redact(caplog: pytest.LogCaptureFixture) -> None:
-    """Missing key: warn and degrade to plain redact (originals not recoverable)."""
-    import logging
+def test_pii_encrypt_without_key_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing key: encrypt must refuse to construct, not silently degrade
+    to redact (which would store plaintext originals)."""
+    monkeypatch.delenv("CONTEXTDB_PII_KEY", raising=False)
+    with pytest.raises(ConfigError, match="encrypt"):
+        PIIDetector(action="encrypt")
 
-    with caplog.at_level(logging.WARNING):
-        det = PIIDetector(action="encrypt")
-    assert any("encrypt" in r.message.lower() for r in caplog.records)
+
+def test_pii_encrypt_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTEXTDB_PII_KEY", "env-secret")
+    det = PIIDetector(action="encrypt")
     out, anns = det.process("ping foo@bar.com")
     assert "[EMAIL]" in out
-    # Plaintext original is preserved since no key was available.
-    assert anns[0].original == "foo@bar.com"
+    assert anns[0].original != "foo@bar.com"
+    assert det.decrypt(anns[0]) == "foo@bar.com"
