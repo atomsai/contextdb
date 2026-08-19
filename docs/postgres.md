@@ -85,6 +85,26 @@ Slot and audit advisory-lock critical sections stay on the connection that
 acquired the transaction lock. This keeps read-modify-write atomic and prevents
 scoped stores waiting on a saturated shared pool from starving the lock holder.
 
+Memory mutations, project-scoped vector revision bumps, and their SDK audit
+entries commit in one transaction. After a successful write:
+
+```python
+token = await db.consistency_token()
+# token.memory_version: monotonic within tenant_id + agent_id
+# token.primary_wal_lsn: PostgreSQL WAL position after the commit
+
+await another_runtime.require_consistency(
+    min_memory_version=token.memory_version,
+    min_wal_lsn=token.primary_wal_lsn,
+)
+```
+
+`require_consistency` raises `StaleReadError` instead of silently serving below
+the requested floor. A hosted service can briefly wait on a replica and then
+retry against the primary. Unscoped/admin stores retain a global revision for
+compatibility; every scoped write bumps both its project revision and that
+global revision in the same transaction.
+
 ## Implementing your own store
 
 Subclass `contextdb.store.base.BaseStore`. You need `initialize`, `add`,

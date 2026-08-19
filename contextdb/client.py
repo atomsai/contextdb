@@ -34,6 +34,7 @@ from contextdb.core.exceptions import (
 )
 from contextdb.core.models import (
     EpistemicSource,
+    MemoryConsistencyToken,
     MemoryExplanation,
     MemoryItem,
     MemoryStatus,
@@ -525,34 +526,38 @@ class ContextDB:
                 content=item.content,
             )
 
-        if item.entity_key and item.attribute_key:
-            stored, outcome = await self._trust.write(item, user_id=uid)
-        else:
-            stored = await store.add(item)
-            outcome = "added"
-            if self._audit is not None:
-                await self._audit.log(
-                    operation="CREATE",
-                    memory_id=stored.id,
+        async with store.mutation():
+            if item.entity_key and item.attribute_key:
+                stored, outcome = await self._trust.write(
+                    item,
                     user_id=uid,
-                    details={"memory_type": memory_type.value},
                 )
+            else:
+                stored = await store.add(item)
+                outcome = "added"
+                if self._audit is not None:
+                    await self._audit.log(
+                        operation="CREATE",
+                        memory_id=stored.id,
+                        user_id=uid,
+                        details={"memory_type": memory_type.value},
+                    )
 
-        # Only freshly-stored memories get graph links; a corroboration
-        # reuses the existing node.
-        if (
-            outcome in {"added", "superseded", "contested"}
-            and self.config.enable_auto_link
-            and self._auto_linker is not None
-        ):
-            await self._auto_linker.link(
-                stored.id,
-                {
-                    "content": stored.content,
-                    "embedding": stored.embedding,
-                    "event_time": stored.event_time,
-                },
-            )
+            # Only freshly-stored memories get graph links; a corroboration
+            # reuses the existing node.
+            if (
+                outcome in {"added", "superseded", "contested"}
+                and self.config.enable_auto_link
+                and self._auto_linker is not None
+            ):
+                await self._auto_linker.link(
+                    stored.id,
+                    {
+                        "content": stored.content,
+                        "embedding": stored.embedding,
+                        "event_time": stored.event_time,
+                    },
+                )
         await self._emit("write", memory_id=stored.id, user_id=uid, outcome=outcome)
         return stored
 
@@ -762,17 +767,24 @@ class ContextDB:
         self._screen_item(item)
         # Deterministic slot → trust engine (still no LLM). Unkeyed
         # fast-writes stay a plain append so the turn path stays cheap.
-        if item.entity_key and item.attribute_key and self._trust is not None:
-            stored, _outcome = await self._trust.write(item, user_id=uid)
-        else:
-            stored = await store.add(item)
-            if self._audit is not None:
-                await self._audit.log(
-                    operation="CREATE",
-                    memory_id=stored.id,
+        async with store.mutation():
+            if item.entity_key and item.attribute_key and self._trust is not None:
+                stored, _outcome = await self._trust.write(
+                    item,
                     user_id=uid,
-                    details={"memory_type": memory_type.value, "fast": True},
                 )
+            else:
+                stored = await store.add(item)
+                if self._audit is not None:
+                    await self._audit.log(
+                        operation="CREATE",
+                        memory_id=stored.id,
+                        user_id=uid,
+                        details={
+                            "memory_type": memory_type.value,
+                            "fast": True,
+                        },
+                    )
         await self._emit("write", memory_id=stored.id, user_id=uid, outcome="fast")
         return stored
 
@@ -791,7 +803,9 @@ class ContextDB:
         uid = self._resolve_user(user_id)
         await self._ensure_init()
         assert self._trust is not None
-        item = await self._trust.confirm(memory_id, user_id=uid)
+        store = self._require_store()
+        async with store.mutation():
+            item = await self._trust.confirm(memory_id, user_id=uid)
         await self._emit("confirm", memory_id=item.id, user_id=uid)
         return item
 
@@ -933,20 +947,28 @@ class ContextDB:
             kwargs["pii_annotations"] = pii
         if metadata is not None:
             kwargs["metadata"] = metadata
-        item = await self._require_store().update(memory_id, **kwargs)
-        if self._audit is not None:
-            await self._audit.log(
-                operation="UPDATE", memory_id=memory_id, user_id=self.user_id
-            )
+        store = self._require_store()
+        async with store.mutation():
+            item = await store.update(memory_id, **kwargs)
+            if self._audit is not None:
+                await self._audit.log(
+                    operation="UPDATE",
+                    memory_id=memory_id,
+                    user_id=self.user_id,
+                )
         return item
 
     async def delete(self, memory_id: str, hard: bool = False) -> None:
         await self._ensure_init()
-        deleted = await self._require_store().delete(memory_id, hard=hard)
-        if deleted and self._audit is not None:
-            await self._audit.log(
-                operation="DELETE", memory_id=memory_id, user_id=self.user_id
-            )
+        store = self._require_store()
+        async with store.mutation():
+            deleted = await store.delete(memory_id, hard=hard)
+            if deleted and self._audit is not None:
+                await self._audit.log(
+                    operation="DELETE",
+                    memory_id=memory_id,
+                    user_id=self.user_id,
+                )
 
     async def add_conversation(self, conversation: str, source: str = "") -> list[MemoryItem]:
         """Run a raw conversation through the formation pipeline and store results.
@@ -961,37 +983,68 @@ class ContextDB:
         items = await self._formation.process(conversation, source=source)
         stored: list[MemoryItem] = []
         store = self._require_store()
-        for item in items:
-            self._apply_slot(item, raw_text=conversation, extractor_bound=True)
-            self._screen_item(item)
-            if item.entity_key and item.attribute_key:
-                saved, outcome = await self._trust.write(item, user_id=self.user_id)
-            else:
-                saved = await store.add(item)
-                outcome = "added"
-            if (
-                outcome in {"added", "superseded", "contested"}
-                and self.config.enable_auto_link
-                and self._auto_linker is not None
-            ):
-                await self._auto_linker.link(
-                    saved.id,
-                    {
-                        "content": saved.content,
-                        "embedding": saved.embedding,
-                        "event_time": saved.event_time,
+        async with store.mutation():
+            for item in items:
+                self._apply_slot(
+                    item,
+                    raw_text=conversation,
+                    extractor_bound=True,
+                )
+                self._screen_item(item)
+                if item.entity_key and item.attribute_key:
+                    saved, outcome = await self._trust.write(
+                        item,
+                        user_id=self.user_id,
+                    )
+                else:
+                    saved = await store.add(item)
+                    outcome = "added"
+                if (
+                    outcome in {"added", "superseded", "contested"}
+                    and self.config.enable_auto_link
+                    and self._auto_linker is not None
+                ):
+                    await self._auto_linker.link(
+                        saved.id,
+                        {
+                            "content": saved.content,
+                            "embedding": saved.embedding,
+                            "event_time": saved.event_time,
+                        },
+                    )
+                stored.append(saved)
+            if self._audit is not None:
+                await self._audit.log(
+                    operation="CREATE",
+                    user_id=self.user_id,
+                    details={
+                        "count": len(stored),
+                        "source": source,
                     },
                 )
-            stored.append(saved)
-        if self._audit is not None:
-            await self._audit.log(
-                operation="CREATE",
-                user_id=self.user_id,
-                details={"count": len(stored), "source": source},
-            )
         return stored
 
     async def forget(
+        self,
+        user_id: str | None = None,
+        entity: str | None = None,
+        older_than: timedelta | None = None,
+        *,
+        memory_id: str | None = None,
+        attribute: str | None = None,
+    ) -> int:
+        """Atomically delete the selected memories and append erasure audit."""
+        await self._ensure_init()
+        async with self._require_store().mutation():
+            return await self._forget_transactional(
+                user_id=user_id,
+                entity=entity,
+                older_than=older_than,
+                memory_id=memory_id,
+                attribute=attribute,
+            )
+
+    async def _forget_transactional(
         self,
         user_id: str | None = None,
         entity: str | None = None,
@@ -1092,6 +1145,12 @@ class ContextDB:
         return n_deleted
 
     async def forget_user(self, user_id: str) -> int:
+        """Atomically erase one user partition and its FORGET proof."""
+        await self._ensure_init()
+        async with self._require_store().mutation():
+            return await self._forget_user_transactional(user_id)
+
+    async def _forget_user_transactional(self, user_id: str) -> int:
         """Verifiable forgetting (Epic 7): delete EVERYTHING for a user.
 
         Raw, archived, and consolidated/derived memories are hard-deleted —
@@ -1207,6 +1266,24 @@ class ContextDB:
             "by_type": by_type,
             "graphs": list(self._graphs.keys()),
         }
+
+    async def consistency_token(self) -> MemoryConsistencyToken:
+        """Return a floor that a later read can require."""
+        await self._ensure_init()
+        return await self._require_store().consistency_token()
+
+    async def require_consistency(
+        self,
+        *,
+        min_memory_version: int | None = None,
+        min_wal_lsn: str | None = None,
+    ) -> MemoryConsistencyToken:
+        """Fail with ``StaleReadError`` unless this store reached the floor."""
+        await self._ensure_init()
+        return await self._require_store().require_consistency(
+            min_memory_version=min_memory_version,
+            min_wal_lsn=min_wal_lsn,
+        )
 
     async def consolidate(self, min_cluster_size: int = 5) -> list[MemoryItem]:
         """Batch consolidation: drain the fast-write queue, then cluster-merge."""

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
-from contextdb.core.exceptions import MemoryNotFoundError
+from contextdb.core.exceptions import MemoryNotFoundError, StaleReadError
 from contextdb.core.models import MemoryItem, MemoryStatus, MemoryType
 from contextdb.store.sqlite_store import SQLiteStore
 
@@ -27,6 +28,50 @@ async def test_add_and_get_roundtrip(tmp_store: SQLiteStore) -> None:
     refetched = await tmp_store.get_raw(stored.id)
     assert refetched is not None
     assert refetched.access_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_consistency_versions_are_project_scoped(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path}/scoped-versions.db"
+    first = SQLiteStore(
+        url,
+        tenant_id="org-a",
+        agent_id="project-a",
+        embedding_dim=32,
+    )
+    second = SQLiteStore(
+        url,
+        tenant_id="org-a",
+        agent_id="project-b",
+        embedding_dim=32,
+    )
+    unscoped = SQLiteStore(url, embedding_dim=32)
+    await first.initialize()
+    await second.initialize()
+    await unscoped.initialize()
+    try:
+        await first.add(MemoryItem(content="first", embedding=[0.1] * 32))
+        first_token = await first.consistency_token()
+        second_token = await second.consistency_token()
+        assert first_token.memory_version == 1
+        assert second_token.memory_version == 0
+
+        with pytest.raises(StaleReadError) as stale:
+            await second.require_consistency(min_memory_version=1)
+        assert stale.value.current_version == 0
+
+        await second.add(
+            MemoryItem(content="second", embedding=[0.2] * 32)
+        )
+        assert (await second.consistency_token()).memory_version == 1
+        assert (await first.consistency_token()).memory_version == 1
+        assert (await unscoped.consistency_token()).memory_version == 2
+    finally:
+        await first.close()
+        await second.close()
+        await unscoped.close()
 
 
 @pytest.mark.asyncio

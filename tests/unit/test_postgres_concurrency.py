@@ -23,6 +23,7 @@ import contextdb
 from contextdb import ContextDB
 from contextdb.core.config import ContextDBConfig
 from contextdb.store.postgres_store import PostgresStore
+from contextdb.store.sqlite_store import scoped_revision_key
 from tests.pg_util import fresh_pg_database
 
 pytestmark = pytest.mark.skipif(
@@ -141,6 +142,124 @@ async def test_shared_pool_audit_waiters_cannot_starve_lock_holder() -> None:
             for store in stores:
                 await store.close()
             await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_unkeyed_write_and_revision_roll_back_when_audit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncpg
+
+    async with fresh_pg_database() as url:
+        client = contextdb.init(
+            config=_cfg(url),
+            tenant_id="atomic-org",
+            agent_id="atomic-project",
+        )
+        try:
+            await client.stats()
+            assert client.audit is not None
+
+            async def unavailable(*args: object, **kwargs: object) -> None:
+                raise RuntimeError("audit unavailable")
+
+            monkeypatch.setattr(client.audit, "log", unavailable)
+            with pytest.raises(RuntimeError, match="audit unavailable"):
+                await client.factual.add(
+                    "Atomic write must roll back",
+                    source="user_stated",
+                    user_id="atomic-user",
+                )
+
+            connection = await asyncpg.connect(url)
+            try:
+                count = await connection.fetchval(
+                    "SELECT COUNT(*) FROM memories "
+                    "WHERE tenant_id = $1 AND agent_id = $2",
+                    "atomic-org",
+                    "atomic-project",
+                )
+                version = await connection.fetchval(
+                    "SELECT value FROM contextdb_meta WHERE key = $1",
+                    scoped_revision_key(
+                        "atomic-org",
+                        "atomic-project",
+                    ),
+                )
+            finally:
+                await connection.close()
+            assert count == 0
+            assert version is None
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_project_version_and_wal_token_gate_reads() -> None:
+    from contextdb.core.exceptions import StaleReadError
+
+    async with fresh_pg_database() as url:
+        writer = contextdb.init(
+            config=_cfg(url),
+            tenant_id="version-org",
+            agent_id="version-project",
+        )
+        reader = contextdb.init(
+            config=_cfg(url),
+            tenant_id="version-org",
+            agent_id="version-project",
+        )
+        foreign = contextdb.init(
+            config=_cfg(url),
+            tenant_id="version-org",
+            agent_id="foreign-project",
+        )
+        try:
+            stored = await writer.factual.add(
+                "Versioned memory",
+                source="user_stated",
+                user_id="version-user",
+            )
+            token = await writer.consistency_token()
+            assert token.memory_version == 1
+            assert token.primary_wal_lsn is not None
+
+            observed = await reader.require_consistency(
+                min_memory_version=token.memory_version,
+                min_wal_lsn=token.primary_wal_lsn,
+            )
+            assert observed.memory_version >= token.memory_version
+
+            with pytest.raises(StaleReadError):
+                await foreign.require_consistency(
+                    min_memory_version=token.memory_version,
+                )
+
+            await writer.confirm(
+                stored.id,
+                user_id="version-user",
+            )
+            confirmed = await writer.consistency_token()
+            assert confirmed.memory_version > token.memory_version
+            await reader.require_consistency(
+                min_memory_version=confirmed.memory_version,
+                min_wal_lsn=confirmed.primary_wal_lsn,
+            )
+
+            await writer.forget(
+                user_id="version-user",
+                memory_id=stored.id,
+            )
+            forgotten = await writer.consistency_token()
+            assert forgotten.memory_version > confirmed.memory_version
+            await reader.require_consistency(
+                min_memory_version=forgotten.memory_version,
+                min_wal_lsn=forgotten.primary_wal_lsn,
+            )
+        finally:
+            await writer.close()
+            await reader.close()
+            await foreign.close()
 
 
 @pytest.mark.asyncio

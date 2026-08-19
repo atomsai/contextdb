@@ -21,6 +21,30 @@ class StorageError(ContextDBError):
     """Raised when the underlying storage backend fails."""
 
 
+class StaleReadError(StorageError):
+    """Raised when a store cannot satisfy a requested consistency floor."""
+
+    def __init__(
+        self,
+        *,
+        required_version: int | None,
+        current_version: int,
+        required_wal_lsn: str | None = None,
+        current_wal_lsn: str | None = None,
+    ) -> None:
+        self.required_version = required_version
+        self.current_version = current_version
+        self.required_wal_lsn = required_wal_lsn
+        self.current_wal_lsn = current_wal_lsn
+        super().__init__(
+            "memory consistency floor is not available "
+            f"(required_version={required_version}, "
+            f"current_version={current_version}, "
+            f"required_wal_lsn={required_wal_lsn}, "
+            f"current_wal_lsn={current_wal_lsn})"
+        )
+
+
 class PrivacyError(ContextDBError):
     """Raised when a privacy constraint is violated (PII handling, retention)."""
 

@@ -8,6 +8,7 @@ from contextdb.core.models import (
     Edge,
     Entity,
     GraphType,
+    MemoryConsistencyToken,
     MemoryItem,
     MemoryStatus,
     MemoryType,
@@ -30,6 +31,17 @@ def test_memory_type_values() -> None:
 
 def test_memory_status_values() -> None:
     assert {s.value for s in MemoryStatus} == {"ACTIVE", "ARCHIVED", "DELETED"}
+
+
+def test_memory_consistency_token_roundtrip() -> None:
+    token = MemoryConsistencyToken(
+        memory_version=42,
+        primary_wal_lsn="1A/2B",
+    )
+    assert token.model_dump() == {
+        "memory_version": 42,
+        "primary_wal_lsn": "1A/2B",
+    }
 
 
 def test_pii_type_values() -> None:

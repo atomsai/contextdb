@@ -65,6 +65,17 @@ audit events. It is for high-throughput hosts that register a `read_audit` hook
 and durably persist its PII-processed `audit_details` payload elsewhere.
 Dropping that payload silently is not equivalent to auditing reads.
 
+For read-after-write consistency across runtimes:
+
+```python
+await writer.factual.add("Prefers Thursday", source="user_stated")
+token = await writer.consistency_token()
+await reader.require_consistency(
+    min_memory_version=token.memory_version,
+    min_wal_lsn=token.primary_wal_lsn,
+)
+```
+
 Pass `trust_policy=TrustPolicy.hospital()` (or `.restaurant()`) to change
 the action bar without forking the product. Pass `clock=FrozenClock(...)`
 in tests so `as_of` and `valid_until` agree about "now."

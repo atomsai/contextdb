@@ -8,6 +8,7 @@ for fast similarity search. The index is rebuilt on first use if missing.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from numpy.typing import NDArray
 
 from contextdb.core.exceptions import MemoryNotFoundError, StorageError
 from contextdb.core.models import (
+    MemoryConsistencyToken,
     MemoryItem,
     MemoryStatus,
     MemoryType,
@@ -95,12 +97,36 @@ CREATE TABLE IF NOT EXISTS contextdb_meta (
 # what keeps two clients over one database (two instances in a process, or
 # many processes on Postgres) from serving each other's writes as stale.
 _REVISION_KEY = "index_revision"
+
+
+def scoped_revision_key(
+    tenant_id: str | None,
+    agent_id: str | None,
+) -> str:
+    if tenant_id is None and agent_id is None:
+        return _REVISION_KEY
+    payload = json.dumps(
+        [tenant_id, agent_id],
+        separators=(",", ":"),
+    ).encode()
+    return (
+        f"{_REVISION_KEY}:project:"
+        f"{hashlib.sha256(payload).hexdigest()[:32]}"
+    )
+
+
 _READ_REVISION_SQL = "SELECT value FROM contextdb_meta WHERE key = ?"
 _BUMP_REVISION_SQL = (
     "INSERT INTO contextdb_meta (key, value) VALUES (?, '1') "
     "ON CONFLICT(key) DO UPDATE "
     "SET value = CAST(CAST(contextdb_meta.value AS INTEGER) + 1 AS TEXT) "
     "RETURNING contextdb_meta.value"
+)
+_BUMP_SCOPED_REVISION_SQL = (
+    "INSERT INTO contextdb_meta (key, value) VALUES (?, '1'), (?, '1') "
+    "ON CONFLICT(key) DO UPDATE "
+    "SET value = CAST(CAST(contextdb_meta.value AS INTEGER) + 1 AS TEXT) "
+    "RETURNING contextdb_meta.key, contextdb_meta.value"
 )
 
 # Trust-model columns added after v0.1. Each entry: (column, DDL fragment).
@@ -267,6 +293,7 @@ class SQLiteStore(BaseStore):
         self._user_id = user_id
         self._tenant_id = tenant_id
         self._agent_id = agent_id
+        self._revision_key = scoped_revision_key(tenant_id, agent_id)
         self._conn: aiosqlite.Connection | None = None
         self._index: VectorIndex | None = vector_index
         self._embedding_dim = embedding_dim
@@ -378,8 +405,17 @@ class SQLiteStore(BaseStore):
         return self._audit_append_lock
 
     async def _read_revision(self) -> int:
-        row = await _fetchone(self._require_conn(), _READ_REVISION_SQL, (_REVISION_KEY,))
+        row = await _fetchone(
+            self._require_conn(),
+            _READ_REVISION_SQL,
+            (self._revision_key,),
+        )
         return int(row["value"]) if row else 0
+
+    async def consistency_token(self) -> MemoryConsistencyToken:
+        return MemoryConsistencyToken(
+            memory_version=await self._read_revision()
+        )
 
     async def _bump_revision(self, conn: aiosqlite.Connection) -> int:
         """Atomically increment the global store revision and return it.
@@ -392,8 +428,25 @@ class SQLiteStore(BaseStore):
         makes a concurrent ``commit()`` on this shared connection fail
         with "cannot commit transaction - SQL statements in progress".
         """
-        rows = await conn.execute_fetchall(_BUMP_REVISION_SQL, (_REVISION_KEY,))
-        row = next(iter(rows), None)
+        if self._revision_key != _REVISION_KEY:
+            rows = await conn.execute_fetchall(
+                _BUMP_SCOPED_REVISION_SQL,
+                (self._revision_key, _REVISION_KEY),
+            )
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if candidate["key"] == self._revision_key
+                ),
+                None,
+            )
+        else:
+            rows = await conn.execute_fetchall(
+                _BUMP_REVISION_SQL,
+                (self._revision_key,),
+            )
+            row = next(iter(rows), None)
         assert row is not None
         return int(row["value"])
 
