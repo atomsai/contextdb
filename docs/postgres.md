@@ -81,6 +81,10 @@ finally:
 The pool must belong to the same event loop as the runtimes. Passing
 `postgres_pool` with a SQLite URL is a configuration error.
 
+Slot and audit advisory-lock critical sections stay on the connection that
+acquired the transaction lock. This keeps read-modify-write atomic and prevents
+scoped stores waiting on a saturated shared pool from starving the lock holder.
+
 ## Implementing your own store
 
 Subclass `contextdb.store.base.BaseStore`. You need `initialize`, `add`,

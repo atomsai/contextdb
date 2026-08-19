@@ -22,6 +22,7 @@ import pytest
 import contextdb
 from contextdb import ContextDB
 from contextdb.core.config import ContextDBConfig
+from contextdb.store.postgres_store import PostgresStore
 from tests.pg_util import fresh_pg_database
 
 pytestmark = pytest.mark.skipif(
@@ -92,6 +93,53 @@ async def test_external_pool_is_shared_and_not_closed_by_clients() -> None:
         finally:
             await first.close()
             await second.close()
+            await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_shared_pool_audit_waiters_cannot_starve_lock_holder() -> None:
+    import asyncpg
+
+    async with fresh_pg_database() as url:
+        pool = await asyncpg.create_pool(url, min_size=4, max_size=4)
+        stores = [PostgresStore(url, pool=pool) for _ in range(4)]
+        for store in stores:
+            await store.initialize()
+
+        holder_entered = asyncio.Event()
+        release_holder = asyncio.Event()
+
+        async def holder() -> None:
+            async with stores[0].audit_lock():
+                holder_entered.set()
+                await release_holder.wait()
+                await stores[0]._require_conn().execute("SELECT 1")
+
+        async def waiter(store: PostgresStore) -> None:
+            async with store.audit_lock():
+                await store._require_conn().execute("SELECT 1")
+
+        tasks = [asyncio.create_task(holder())]
+        try:
+            await holder_entered.wait()
+            tasks.extend(
+                asyncio.create_task(waiter(store))
+                for store in stores[1:]
+            )
+            for _ in range(100):
+                if pool.get_idle_size() == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert pool.get_idle_size() == 0
+            release_holder.set()
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+        finally:
+            release_holder.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for store in stores:
+                await store.close()
             await pool.close()
 
 

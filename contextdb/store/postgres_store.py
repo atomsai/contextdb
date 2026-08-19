@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -69,21 +70,47 @@ class _PgAdapter:
 
     def __init__(self, pool: Any) -> None:
         self._pool = pool
+        self._bound_connection: ContextVar[Any | None] = ContextVar(
+            f"contextdb_pg_connection_{id(self)}",
+            default=None,
+        )
+
+    def bind(self, connection: Any) -> Any:
+        return self._bound_connection.set(connection)
+
+    def reset(self, token: Any) -> None:
+        self._bound_connection.reset(token)
+
+    async def _execute(
+        self,
+        conn: Any,
+        translated: str,
+        params: tuple[Any, ...] | list[Any],
+    ) -> _PgResult:
+        stripped = translated.lstrip().upper()
+        if stripped.startswith("SELECT") or "RETURNING" in stripped:
+            rows = await conn.fetch(translated, *params)
+            return _PgResult([dict(row) for row in rows], rowcount=len(rows))
+        status = await conn.execute(translated, *params)
+        count = 0
+        if isinstance(status, str) and status.split()[-1].isdigit():
+            count = int(status.split()[-1])
+        return _PgResult([], rowcount=count)
 
     async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> _PgResult:
         translated = translate_sqlite_sql(sql)
+        bound = self._bound_connection.get()
+        if bound is not None:
+            return await self._execute(bound, translated, params)
         async with self._pool.acquire() as conn:
-            stripped = translated.lstrip().upper()
-            if stripped.startswith("SELECT") or "RETURNING" in stripped:
-                rows = await conn.fetch(translated, *params)
-                return _PgResult([dict(row) for row in rows], rowcount=len(rows))
-            status = await conn.execute(translated, *params)
-            count = 0
-            if isinstance(status, str) and status.split()[-1].isdigit():
-                count = int(status.split()[-1])
-            return _PgResult([], rowcount=count)
+            return await self._execute(conn, translated, params)
 
     async def executescript(self, script: str) -> None:
+        bound = self._bound_connection.get()
+        if bound is not None:
+            for stmt in split_script(script):
+                await _exec_schema_statement(bound, translate_sqlite_sql(stmt))
+            return
         async with self._pool.acquire() as conn:
             for stmt in split_script(script):
                 await _exec_schema_statement(conn, translate_sqlite_sql(stmt))
@@ -97,18 +124,20 @@ class _PgAdvisoryLock:
 
     ``pg_advisory_xact_lock`` serializes holders of the same key across
     every connection and process on the database; the transaction ends
-    the hold. The in-process ``guard`` runs first so one event loop can
-    hold at most one pool connection while *waiting* on the advisory
-    lock — without it, N waiting tasks would hold N connections and a
-    lock holder's own critical section could starve the pool.
+    the hold. The adapter binds the critical section to the same connection,
+    making read-modify-write atomic and ensuring a lock holder never needs a
+    second pool connection while other scoped stores wait on the same lock.
+    The in-process ``guard`` additionally limits waiters per store.
     """
 
-    def __init__(self, pool: Any, key: str, guard: asyncio.Lock) -> None:
-        self._pool = pool
+    def __init__(self, adapter: _PgAdapter, key: str, guard: asyncio.Lock) -> None:
+        self._adapter = adapter
+        self._pool = adapter._pool
         self._key = key
         self._guard = guard
         self._conn: Any = None
         self._tx: Any = None
+        self._binding: Any = None
 
     async def __aenter__(self) -> _PgAdvisoryLock:
         await self._guard.acquire()
@@ -119,11 +148,18 @@ class _PgAdvisoryLock:
             await self._conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))", self._key
             )
+            self._binding = self._adapter.bind(self._conn)
         except BaseException:
-            if self._conn is not None:
-                await self._pool.release(self._conn)
-                self._conn = None
-            self._guard.release()
+            try:
+                if self._tx is not None:
+                    await self._tx.rollback()
+            finally:
+                try:
+                    if self._conn is not None:
+                        await self._pool.release(self._conn)
+                        self._conn = None
+                finally:
+                    self._guard.release()
             raise
         return self
 
@@ -134,9 +170,14 @@ class _PgAdvisoryLock:
             else:
                 await self._tx.rollback()
         finally:
-            await self._pool.release(self._conn)
-            self._conn = None
-            self._guard.release()
+            if self._binding is not None:
+                self._adapter.reset(self._binding)
+                self._binding = None
+            try:
+                await self._pool.release(self._conn)
+                self._conn = None
+            finally:
+                self._guard.release()
 
 
 class PostgresStore(BaseStore):
@@ -217,11 +258,6 @@ class PostgresStore(BaseStore):
             raise StorageError("PostgresStore is not initialized. Call initialize() first.")
         return self._adapter
 
-    def _require_pool(self) -> Any:
-        if self._pool is None:
-            raise StorageError("PostgresStore is not initialized. Call initialize() first.")
-        return self._pool
-
     def _resolve_scope(self, user_id: str | None) -> str | None:
         if self._user_id is not None:
             return self._user_id
@@ -264,13 +300,17 @@ class PostgresStore(BaseStore):
         scope = self._resolve_scope(user_id)
         key = "|".join((scope or "", self._tenant_id or "", entity_key, attribute_key))
         return _PgAdvisoryLock(
-            self._require_pool(), f"contextdb-slot:{key}", self._slot_advisory_gate
+            self._require_conn(),
+            f"contextdb-slot:{key}",
+            self._slot_advisory_gate,
         )
 
     def audit_lock(self) -> _PgAdvisoryLock:
         """Cross-process serialization for hash-chain appends."""
         return _PgAdvisoryLock(
-            self._require_pool(), "contextdb-audit-chain", self._audit_guard
+            self._require_conn(),
+            "contextdb-audit-chain",
+            self._audit_guard,
         )
 
     async def _fetch(
