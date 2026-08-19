@@ -55,6 +55,47 @@ async def _close_all(clients: list[ContextDB]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_external_pool_is_shared_and_not_closed_by_clients() -> None:
+    import asyncpg
+
+    async with fresh_pg_database() as url:
+        pool = await asyncpg.create_pool(url, min_size=1, max_size=4)
+        first = contextdb.init(
+            config=_cfg(url),
+            tenant_id="tenant-shared",
+            agent_id="agent-shared",
+            postgres_pool=pool,
+        )
+        second = contextdb.init(
+            config=_cfg(url),
+            tenant_id="tenant-shared",
+            agent_id="agent-shared",
+            postgres_pool=pool,
+        )
+        try:
+            stored = await first.factual.add(
+                "The shared pool remains open",
+                source="user_stated",
+                user_id="user-shared",
+            )
+            await first.close()
+            async with pool.acquire() as conn:
+                assert await conn.fetchval("SELECT 1") == 1
+            memories = await second.factual.list_facts(
+                user_id="user-shared",
+                limit=10,
+            )
+            assert stored.id in {memory.id for memory in memories}
+            await second.close()
+            async with pool.acquire() as conn:
+                assert await conn.fetchval("SELECT 1") == 1
+        finally:
+            await first.close()
+            await second.close()
+            await pool.close()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_slot_writes_do_not_lose_corroboration() -> None:
     """Six workers restating the same slot value in different sessions must
     all land as independent corroboration — the cross-process slot lock

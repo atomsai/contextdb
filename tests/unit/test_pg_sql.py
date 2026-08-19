@@ -1,5 +1,13 @@
-from contextdb.store.factory import is_postgres_url, normalize_postgres_url
+import pytest
+
+from contextdb.core.exceptions import ConfigError
+from contextdb.store.factory import (
+    is_postgres_url,
+    normalize_postgres_url,
+    open_store,
+)
 from contextdb.store.pg_sql import qmark_to_dollar, split_script, translate_sqlite_sql
+from contextdb.store.postgres_store import PostgresStore
 
 
 def test_qmark_to_dollar() -> None:
@@ -32,3 +40,23 @@ def test_postgres_url() -> None:
     assert is_postgres_url("postgres://localhost/db")
     assert not is_postgres_url("sqlite:///x.db")
     assert normalize_postgres_url("postgresql+asyncpg://h/db") == "postgresql://h/db"
+
+
+def test_external_postgres_pool_rejects_sqlite() -> None:
+    with pytest.raises(ConfigError, match="requires a PostgreSQL"):
+        open_store("sqlite:///:memory:", postgres_pool=object())
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_does_not_close_external_pool() -> None:
+    class FakePool:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    pool = FakePool()
+    store = PostgresStore("postgresql://example/contextdb", pool=pool)
+    await store.close()
+    assert pool.closed == 0

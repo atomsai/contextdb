@@ -150,12 +150,15 @@ class PostgresStore(BaseStore):
         agent_id: str | None = None,
         vector_index: VectorIndex | None = None,
         embedding_dim: int = 1536,
+        pool: Any | None = None,
     ) -> None:
         self._url = storage_url
         self._user_id = user_id
         self._tenant_id = tenant_id
         self._agent_id = agent_id
-        self._pool: Any = None
+        self._pool: Any = pool
+        self._owns_pool = pool is None
+        self._initialized = False
         self._adapter: _PgAdapter | None = None
         self._index: VectorIndex | None = vector_index
         self._embedding_dim = embedding_dim
@@ -172,7 +175,7 @@ class PostgresStore(BaseStore):
         self._audit_guard = asyncio.Lock()
 
     async def initialize(self) -> None:
-        if self._pool is not None:
+        if self._initialized:
             return
         try:
             import asyncpg
@@ -180,7 +183,12 @@ class PostgresStore(BaseStore):
             raise StorageError(
                 "asyncpg is not installed. `pip install 'pycontextdb[postgres]'`."
             ) from exc
-        self._pool = await asyncpg.create_pool(self._url, min_size=1, max_size=10)
+        if self._pool is None:
+            self._pool = await asyncpg.create_pool(
+                self._url,
+                min_size=1,
+                max_size=10,
+            )
         self._adapter = _PgAdapter(self._pool)
         async with self._pool.acquire() as conn:
             for stmt in split_script(_PG_SCHEMA):
@@ -202,6 +210,7 @@ class PostgresStore(BaseStore):
                 await _exec_schema_statement(
                     conn, "ALTER TABLE memories ADD COLUMN IF NOT EXISTS user_id TEXT"
                 )
+        self._initialized = True
 
     def _require_conn(self) -> _PgAdapter:
         if self._adapter is None:
@@ -813,9 +822,11 @@ class PostgresStore(BaseStore):
 
     async def close(self) -> None:
         if self._pool is not None:
-            await self._pool.close()
+            if self._owns_pool:
+                await self._pool.close()
             self._pool = None
             self._adapter = None
+            self._initialized = False
 
 
 def _iso(value: datetime | None) -> str | None:

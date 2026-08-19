@@ -70,6 +70,7 @@ def init(
     session_id: str | None = None,
     clock: Clock | None = None,
     trust_policy: TrustPolicy | None = None,
+    postgres_pool: Any | None = None,
     **kwargs: Any,
 ) -> ContextDB:
     """Create a :class:`ContextDB` client.
@@ -84,6 +85,8 @@ def init(
         config: Pre-built configuration. When ``None`` one is constructed
             from ``kwargs`` and environment variables prefixed with
             ``CONTEXTDB_``.
+        postgres_pool: Optional externally owned asyncpg pool. Valid only with
+            a PostgreSQL ``storage_url``. ContextDB never closes this pool.
         **kwargs: Forwarded to :class:`ContextDBConfig` if ``config`` is
             not provided.
 
@@ -99,4 +102,5 @@ def init(
         session_id=session_id,
         clock=clock,
         trust_policy=trust_policy,
+        postgres_pool=postgres_pool,
     )

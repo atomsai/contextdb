@@ -42,6 +42,45 @@ The store is safe to share across processes and workers:
 SQLite remains the single-process backend: its slot and audit locks are
 in-process by design.
 
+## Reusing an application-owned pool
+
+High-throughput hosts should create one asyncpg pool and pass it to scoped
+ContextDB runtimes. ContextDB uses the pool but never closes it.
+
+```python
+import asyncpg
+import contextdb
+
+pool = await asyncpg.create_pool(
+    "postgresql://user:pass@host:5432/contextdb",
+    min_size=2,
+    max_size=20,
+)
+
+support = contextdb.init(
+    storage_url="postgresql://user:pass@host:5432/contextdb",
+    tenant_id="acme",
+    agent_id="support",
+    postgres_pool=pool,
+)
+sales = contextdb.init(
+    storage_url="postgresql://user:pass@host:5432/contextdb",
+    tenant_id="acme",
+    agent_id="sales",
+    postgres_pool=pool,
+)
+
+try:
+    await support.factual.recall("open issue", user_id="customer-42")
+finally:
+    await support.close()
+    await sales.close()
+    await pool.close()
+```
+
+The pool must belong to the same event loop as the runtimes. Passing
+`postgres_pool` with a SQLite URL is a configuration error.
+
 ## Implementing your own store
 
 Subclass `contextdb.store.base.BaseStore`. You need `initialize`, `add`,
