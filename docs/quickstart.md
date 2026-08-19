@@ -57,7 +57,13 @@ here works offline.
 | `enable_multi_graph`  | `False` | Temporal + causal graphs |
 | `enable_rl_manager`   | `False` | Inference-time memory policy |
 | `enable_audit`        | `True`  | Hash-chained audit log |
+| `enable_read_audit`   | `True`  | Synchronous `SEARCH` entries in that chain |
 | `enable_auto_link`    | `True`  | Mirror each write into graph indices |
+
+`enable_read_audit=False` does not disable write, confirmation, or lifecycle
+audit events. It is for high-throughput hosts that register a `recall` hook and
+durably persist its PII-processed `audit_details` payload elsewhere. Dropping
+that payload silently is not equivalent to auditing reads.
 
 Pass `trust_policy=TrustPolicy.hospital()` (or `.restaurant()`) to change
 the action bar without forking the product. Pass `clock=FrozenClock(...)`

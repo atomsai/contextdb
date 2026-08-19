@@ -617,48 +617,57 @@ class ContextDB:
         items = items[:top_k]
         if compose:
             items = await self._compose_siblings(items, moment, extra=top_k, user_id=uid)
-        if self._audit is not None:
-            score_by_id = {s.item.id: s for s in scored}
+        score_by_id = {s.item.id: s for s in scored}
+        returned_ids = [memory.id for memory in items]
+        returned_id_set = set(returned_ids)
+        audit_details = {
+            # The audit chain is append-only; only the redacted
+            # form of the query may be persisted.
+            "query": processed_query,
+            "hits": len(items),
+            "returned_ids": returned_ids,
+            "as_of": moment.isoformat(),
+            "relevance_floor": floor,
+            "abstained": len(items) == 0,
+            # Recall-side observability (Epic 6): every recall logs
+            # the full score decomposition AND the decision flags
+            # as they stood at recall time — computed properties
+            # change after confirm(), so a diary of scores without
+            # the decision is not an audit.
+            "scores": {
+                mid: {
+                    "final": round(s.final_score, 6),
+                    "rrf": round(s.rrf_score, 6),
+                    "salience": round(s.salience, 6),
+                    "age_days": round(s.age_days, 3),
+                    "recurrence": s.recurrence,
+                    "criticality_boost": s.criticality_boost,
+                    "per_graph": s.per_graph,
+                    "requires_confirmation": self.trust_policy.requires_confirmation(
+                        s.item
+                    ),
+                    "action_trusted": self.trust_policy.is_trusted(s.item),
+                    "confirmed": s.item.confirmed,
+                    "contested": s.item.contested,
+                    "independent_corroboration": s.item.independent_corroboration,
+                }
+                for mid, s in score_by_id.items()
+                if mid in returned_id_set
+            },
+        }
+        if self._audit is not None and self.config.enable_read_audit:
             await self._audit.log(
                 operation="SEARCH",
                 user_id=uid,
-                details={
-                    # The audit chain is append-only; only the redacted
-                    # form of the query may be persisted.
-                    "query": processed_query,
-                    "hits": len(items),
-                    "returned_ids": [m.id for m in items],
-                    "as_of": moment.isoformat(),
-                    "relevance_floor": floor,
-                    "abstained": len(items) == 0,
-                    # Recall-side observability (Epic 6): every recall logs
-                    # the full score decomposition AND the decision flags
-                    # as they stood at recall time — computed properties
-                    # change after confirm(), so a diary of scores without
-                    # the decision is not an audit.
-                    "scores": {
-                        mid: {
-                            "final": round(s.final_score, 6),
-                            "rrf": round(s.rrf_score, 6),
-                            "salience": round(s.salience, 6),
-                            "age_days": round(s.age_days, 3),
-                            "recurrence": s.recurrence,
-                            "criticality_boost": s.criticality_boost,
-                            "per_graph": s.per_graph,
-                            "requires_confirmation": self.trust_policy.requires_confirmation(
-                                s.item
-                            ),
-                            "action_trusted": self.trust_policy.is_trusted(s.item),
-                            "confirmed": s.item.confirmed,
-                            "contested": s.item.contested,
-                            "independent_corroboration": s.item.independent_corroboration,
-                        }
-                        for mid, s in score_by_id.items()
-                        if mid in {m.id for m in items}
-                    },
-                },
+                details=audit_details,
             )
-        await self._emit("recall", user_id=uid, query=query, hits=len(items))
+        await self._emit(
+            "recall",
+            user_id=uid,
+            query=query,
+            hits=len(items),
+            audit_details=audit_details,
+        )
         return items
 
     async def _lexical_scored(

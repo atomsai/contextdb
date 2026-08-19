@@ -135,6 +135,43 @@ async def test_search_audit_log_never_stores_raw_pii_query(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_deferred_read_audit_emits_redacted_details_and_keeps_write_audit(
+    tmp_path: Path,
+) -> None:
+    db = contextdb.init(
+        user_id="alice",
+        config=_cfg(tmp_path, enable_read_audit=False),
+    )
+    recalls: list[dict[str, object]] = []
+
+    async def capture(_event: str, payload: dict[str, object]) -> None:
+        recalls.append(payload)
+
+    db.on("recall", capture)
+    try:
+        stored = await db.factual.add(
+            "My email is jane.doe@example.com",
+            source="user_stated",
+        )
+        await db.search("please look up jane.doe@example.com")
+        assert db.audit is not None
+        entries = await db.audit.get_history()
+        assert any(entry.operation == "CREATE" for entry in entries)
+        assert all(entry.operation != "SEARCH" for entry in entries)
+        assert await db.audit.verify_chain()
+
+        assert len(recalls) == 1
+        details = recalls[0]["audit_details"]
+        assert isinstance(details, dict)
+        assert details["query"] == "please look up [EMAIL]"
+        assert "jane.doe@example.com" not in str(details)
+        assert stored.id in details["returned_ids"]
+        assert stored.id in details["scores"]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_encrypt_pii_action_fails_closed_without_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
