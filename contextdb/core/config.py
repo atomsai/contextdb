@@ -115,6 +115,15 @@ class ContextDBConfig(BaseSettings):
     enable_multi_graph: bool = Field(default=False)
     enable_rl_manager: bool = Field(default=False)
     enable_audit: bool = Field(default=True)
+    enable_read_audit: bool = Field(
+        default=True,
+        description=(
+            "Append SEARCH events to the synchronous SDK audit chain. "
+            "High-throughput hosts may disable this only when they durably "
+            "consume the read_audit hook's redacted audit_details payload. "
+            "Write and lifecycle audit events remain enabled."
+        ),
+    )
     enable_auto_link: bool = Field(default=True)
     require_source: bool = Field(
         default=False,
