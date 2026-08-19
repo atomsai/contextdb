@@ -78,6 +78,7 @@ class ContextDB:
         session_id: str | None = None,
         clock: Clock | None = None,
         trust_policy: TrustPolicy | None = None,
+        postgres_pool: Any | None = None,
     ) -> None:
         self.config = config
         self.user_id = user_id
@@ -89,6 +90,7 @@ class ContextDB:
         self.trust_policy = trust_policy or TrustPolicy(
             relevance_floor=config.relevance_floor
         )
+        self._postgres_pool = postgres_pool
         self._store: BaseStore | None = None
         self._hooks: dict[str, list[Callable[..., Any]]] = {}
         self._embedder: EmbeddingProvider | None = None
@@ -159,6 +161,7 @@ class ContextDB:
             tenant_id=self.tenant_id,
             agent_id=self.agent_id,
             embedding_dim=dim,
+            postgres_pool=self._postgres_pool,
         )
         await self._store.initialize()
         if self._llm is None:

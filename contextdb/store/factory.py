@@ -27,6 +27,7 @@ def open_store(
     tenant_id: str | None = None,
     agent_id: str | None = None,
     embedding_dim: int = 1536,
+    postgres_pool: Any | None = None,
 ) -> BaseStore:
     """Return a SQLite or Postgres store. Postgres needs ``pycontextdb[postgres]``."""
     if is_postgres_url(storage_url):
@@ -43,7 +44,10 @@ def open_store(
             tenant_id=tenant_id,
             agent_id=agent_id,
             embedding_dim=embedding_dim,
+            pool=postgres_pool,
         )
+    if postgres_pool is not None:
+        raise ConfigError("postgres_pool requires a PostgreSQL storage_url")
     return SQLiteStore(
         storage_url=storage_url,
         user_id=user_id,
