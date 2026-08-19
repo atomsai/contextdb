@@ -120,7 +120,7 @@ class ContextDBConfig(BaseSettings):
         description=(
             "Append SEARCH events to the synchronous SDK audit chain. "
             "High-throughput hosts may disable this only when they durably "
-            "consume the recall hook's redacted audit_details payload. "
+            "consume the read_audit hook's redacted audit_details payload. "
             "Write and lifecycle audit events remain enabled."
         ),
     )

@@ -319,8 +319,12 @@ class ContextDB:
         event: str,
         hook: Callable[[str, dict[str, Any]], Awaitable[None] | None],
     ) -> None:
-        """Register an ops callback. Events: write, recall, confirm, forget,
-        injection_suspect, embed_fallback. Use ``*`` for all events.
+        """Register an ops callback. Events: write, recall, read_audit,
+        confirm, forget, injection_suspect, embed_fallback. Use ``*`` for all.
+
+        ``read_audit`` receives only the PII-processed audit payload. Hosted
+        runtimes that disable synchronous read auditing should durably persist
+        this event before returning a successful recall.
         """
         self._hooks.setdefault(event, []).append(hook)
 
@@ -662,11 +666,15 @@ class ContextDB:
                 details=audit_details,
             )
         await self._emit(
+            "read_audit",
+            user_id=uid,
+            audit_details=audit_details,
+        )
+        await self._emit(
             "recall",
             user_id=uid,
             query=query,
             hits=len(items),
-            audit_details=audit_details,
         )
         return items
 

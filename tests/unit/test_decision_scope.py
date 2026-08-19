@@ -147,7 +147,7 @@ async def test_deferred_read_audit_emits_redacted_details_and_keeps_write_audit(
     async def capture(_event: str, payload: dict[str, object]) -> None:
         recalls.append(payload)
 
-    db.on("recall", capture)
+    db.on("read_audit", capture)
     try:
         stored = await db.factual.add(
             "My email is jane.doe@example.com",
@@ -167,6 +167,31 @@ async def test_deferred_read_audit_emits_redacted_details_and_keeps_write_audit(
         assert "jane.doe@example.com" not in str(details)
         assert stored.id in details["returned_ids"]
         assert stored.id in details["scores"]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_deferred_read_audit_sink_failure_fails_recall(
+    tmp_path: Path,
+) -> None:
+    db = contextdb.init(
+        user_id="alice",
+        config=_cfg(tmp_path, enable_read_audit=False),
+    )
+
+    async def unavailable(_event: str, _payload: dict[str, object]) -> None:
+        raise RuntimeError("durable read audit unavailable")
+
+    db.on("read_audit", unavailable)
+    try:
+        with pytest.raises(RuntimeError, match="durable read audit unavailable"):
+            await db.search("anything")
+        assert db.audit is not None
+        assert all(
+            entry.operation != "SEARCH"
+            for entry in await db.audit.get_history()
+        )
     finally:
         await db.close()
 
