@@ -65,6 +65,16 @@ class MemoryStatus(str, Enum):
     DELETED = "DELETED"
 
 
+class MemoryConsistencyToken(BaseModel):
+    """A lower bound that a later read must observe."""
+
+    memory_version: int = Field(ge=0)
+    primary_wal_lsn: str | None = Field(
+        default=None,
+        pattern=r"^[0-9A-F]+/[0-9A-F]+$",
+    )
+
+
 class PIIType(str, Enum):
     """Recognized PII categories. ``CUSTOM`` is an escape hatch for users."""
 

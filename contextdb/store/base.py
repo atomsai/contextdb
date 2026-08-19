@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
-from contextdb.core.models import MemoryStatus
+from contextdb.core.exceptions import StaleReadError
+from contextdb.core.models import MemoryConsistencyToken, MemoryStatus
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -77,6 +79,44 @@ class BaseStore(ABC):
     @abstractmethod
     async def close(self) -> None:
         """Release resources."""
+
+    @asynccontextmanager
+    async def mutation(self) -> AsyncIterator[None]:
+        """Wrap one logical mutation.
+
+        Networked stores override this to make the memory change, revision
+        bump, and audit append one transaction. Local stores may rely on their
+        existing per-operation commits.
+        """
+        yield
+
+    async def consistency_token(self) -> MemoryConsistencyToken:
+        """Return the latest consistency floor visible to this scoped store."""
+        return MemoryConsistencyToken(memory_version=0)
+
+    async def require_consistency(
+        self,
+        *,
+        min_memory_version: int | None = None,
+        min_wal_lsn: str | None = None,
+    ) -> MemoryConsistencyToken:
+        token = await self.consistency_token()
+        version_stale = (
+            min_memory_version is not None
+            and token.memory_version < min_memory_version
+        )
+        wal_unavailable = (
+            min_wal_lsn is not None
+            and token.primary_wal_lsn is None
+        )
+        if version_stale or wal_unavailable:
+            raise StaleReadError(
+                required_version=min_memory_version,
+                current_version=token.memory_version,
+                required_wal_lsn=min_wal_lsn,
+                current_wal_lsn=token.primary_wal_lsn,
+            )
+        return token
 
     def _require_conn(self) -> Any:
         """SQLite/Postgres connection adapter used by graphs and the audit log."""

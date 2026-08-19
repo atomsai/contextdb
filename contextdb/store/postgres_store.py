@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
@@ -20,12 +21,22 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from contextdb.core.exceptions import MemoryNotFoundError, StorageError
-from contextdb.core.models import MemoryItem, MemoryStatus, MemoryType
+from contextdb.core.exceptions import (
+    MemoryNotFoundError,
+    StaleReadError,
+    StorageError,
+)
+from contextdb.core.models import (
+    MemoryConsistencyToken,
+    MemoryItem,
+    MemoryStatus,
+    MemoryType,
+)
 from contextdb.store.base import BaseStore
 from contextdb.store.pg_sql import split_script, translate_sqlite_sql
 from contextdb.store.sqlite_store import (
     _BUMP_REVISION_SQL,
+    _BUMP_SCOPED_REVISION_SQL,
     _READ_REVISION_SQL,
     _REVISION_KEY,
     _TRUST_COLUMNS,
@@ -33,6 +44,7 @@ from contextdb.store.sqlite_store import (
     _embedding_to_blob,
     _passes_filters,
     _row_to_item,
+    scoped_revision_key,
 )
 from contextdb.store.vector_index import VectorIndex, get_vector_index
 
@@ -81,6 +93,10 @@ class _PgAdapter:
     def reset(self, token: Any) -> None:
         self._bound_connection.reset(token)
 
+    @property
+    def bound_connection(self) -> Any | None:
+        return self._bound_connection.get()
+
     async def _execute(
         self,
         conn: Any,
@@ -119,6 +135,48 @@ class _PgAdapter:
         return None
 
 
+class _PgMutation:
+    """Bind one logical mutation to one Postgres transaction."""
+
+    def __init__(self, adapter: _PgAdapter) -> None:
+        self._adapter = adapter
+        self._pool = adapter._pool
+        self._conn: Any = None
+        self._tx: Any = None
+        self._binding: Any = None
+        self._nested = False
+
+    async def __aenter__(self) -> _PgMutation:
+        if self._adapter.bound_connection is not None:
+            self._nested = True
+            return self
+        self._conn = await self._pool.acquire()
+        try:
+            self._tx = self._conn.transaction()
+            await self._tx.start()
+            self._binding = self._adapter.bind(self._conn)
+        except BaseException:
+            await self._pool.release(self._conn)
+            self._conn = None
+            raise
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._nested:
+            return
+        try:
+            if exc_type is None:
+                await self._tx.commit()
+            else:
+                await self._tx.rollback()
+        finally:
+            if self._binding is not None:
+                self._adapter.reset(self._binding)
+                self._binding = None
+            await self._pool.release(self._conn)
+            self._conn = None
+
+
 class _PgAdvisoryLock:
     """Cross-process mutex via a transaction-scoped Postgres advisory lock.
 
@@ -138,9 +196,23 @@ class _PgAdvisoryLock:
         self._conn: Any = None
         self._tx: Any = None
         self._binding: Any = None
+        self._nested = False
 
     async def __aenter__(self) -> _PgAdvisoryLock:
         await self._guard.acquire()
+        bound = self._adapter.bound_connection
+        if bound is not None:
+            try:
+                await bound.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    self._key,
+                )
+            except BaseException:
+                self._guard.release()
+                raise
+            self._conn = bound
+            self._nested = True
+            return self
         try:
             self._conn = await self._pool.acquire()
             self._tx = self._conn.transaction()
@@ -164,6 +236,9 @@ class _PgAdvisoryLock:
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._nested:
+            self._guard.release()
+            return
         try:
             if exc_type is None:
                 await self._tx.commit()
@@ -197,6 +272,7 @@ class PostgresStore(BaseStore):
         self._user_id = user_id
         self._tenant_id = tenant_id
         self._agent_id = agent_id
+        self._revision_key = scoped_revision_key(tenant_id, agent_id)
         self._pool: Any = pool
         self._owns_pool = pool is None
         self._initialized = False
@@ -257,6 +333,11 @@ class PostgresStore(BaseStore):
         if self._adapter is None:
             raise StorageError("PostgresStore is not initialized. Call initialize() first.")
         return self._adapter
+
+    @asynccontextmanager
+    async def mutation(self) -> AsyncIterator[None]:
+        async with _PgMutation(self._require_conn()):
+            yield
 
     def _resolve_scope(self, user_id: str | None) -> str | None:
         if self._user_id is not None:
@@ -324,7 +405,10 @@ class PostgresStore(BaseStore):
         return int(result.rowcount)
 
     async def _read_revision(self) -> int:
-        rows = await self._fetch(_READ_REVISION_SQL, (_REVISION_KEY,))
+        rows = await self._fetch(
+            _READ_REVISION_SQL,
+            (self._revision_key,),
+        )
         return int(rows[0]["value"]) if rows else 0
 
     async def _bump_revision(self) -> int:
@@ -333,9 +417,113 @@ class PostgresStore(BaseStore):
         Called inside the write lock alongside the mutation, so a revision
         the process-local index has not seen always means "someone wrote".
         """
-        rows = await self._fetch(_BUMP_REVISION_SQL, (_REVISION_KEY,))
-        assert rows
-        return int(rows[0]["value"])
+        if self._revision_key != _REVISION_KEY:
+            rows = await self._fetch(
+                _BUMP_SCOPED_REVISION_SQL,
+                (self._revision_key, _REVISION_KEY),
+            )
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if candidate["key"] == self._revision_key
+                ),
+                None,
+            )
+        else:
+            rows = await self._fetch(
+                _BUMP_REVISION_SQL,
+                (self._revision_key,),
+            )
+            row = rows[0] if rows else None
+        assert row is not None
+        return int(row["value"])
+
+    async def consistency_token(self) -> MemoryConsistencyToken:
+        adapter = self._require_conn()
+        rows = await adapter.execute(
+            """
+            SELECT
+                COALESCE((
+                    SELECT CAST(value AS BIGINT)
+                    FROM contextdb_meta
+                    WHERE key = ?
+                ), 0) AS memory_version,
+                CASE
+                    WHEN pg_is_in_recovery()
+                    THEN pg_last_wal_replay_lsn()::text
+                    ELSE pg_current_wal_lsn()::text
+                END AS wal_lsn
+            """,
+            (self._revision_key,),
+        )
+        row = await rows.fetchone()
+        assert row is not None
+        return MemoryConsistencyToken(
+            memory_version=int(row["memory_version"]),
+            primary_wal_lsn=(
+                str(row["wal_lsn"])
+                if row["wal_lsn"] is not None
+                else None
+            ),
+        )
+
+    async def require_consistency(
+        self,
+        *,
+        min_memory_version: int | None = None,
+        min_wal_lsn: str | None = None,
+    ) -> MemoryConsistencyToken:
+        adapter = self._require_conn()
+        wal_lsn_value = _wal_lsn_value(min_wal_lsn)
+        rows = await adapter.execute(
+            """
+            SELECT
+                COALESCE((
+                    SELECT CAST(value AS BIGINT)
+                    FROM contextdb_meta
+                    WHERE key = ?
+                ), 0) AS memory_version,
+                CASE
+                    WHEN pg_is_in_recovery()
+                    THEN pg_last_wal_replay_lsn()::text
+                    ELSE pg_current_wal_lsn()::text
+                END AS wal_lsn,
+                CASE
+                    WHEN CAST(? AS TEXT) IS NULL THEN TRUE
+                    WHEN pg_is_in_recovery()
+                    THEN pg_last_wal_replay_lsn() >= CAST(? AS pg_lsn)
+                    ELSE pg_current_wal_lsn() >= CAST(? AS pg_lsn)
+                END AS wal_ready
+            """,
+            (
+                self._revision_key,
+                min_wal_lsn,
+                wal_lsn_value,
+                wal_lsn_value,
+            ),
+        )
+        row = await rows.fetchone()
+        assert row is not None
+        current_version = int(row["memory_version"])
+        current_lsn = (
+            str(row["wal_lsn"]) if row["wal_lsn"] is not None else None
+        )
+        version_ready = (
+            min_memory_version is None
+            or current_version >= min_memory_version
+        )
+        if not version_ready or not bool(row["wal_ready"]):
+            raise StaleReadError(
+                required_version=min_memory_version,
+                current_version=current_version,
+                required_wal_lsn=min_wal_lsn,
+                current_wal_lsn=current_lsn,
+            )
+        return MemoryConsistencyToken(
+            memory_version=current_version,
+            primary_wal_lsn=current_lsn,
+        )
 
     async def _ensure_index(self) -> VectorIndex:
         if self._index is None:
@@ -403,6 +591,13 @@ class PostgresStore(BaseStore):
         self._loaded_revision = None
 
     async def add(self, item: MemoryItem) -> MemoryItem:
+        async with self.mutation():
+            return await self._add_transactional(item)
+
+    async def _add_transactional(
+        self,
+        item: MemoryItem,
+    ) -> MemoryItem:
         uid = item.user_id or self._user_id
         if self._user_id is not None and uid is not None and uid != self._user_id:
             raise StorageError("cannot write another user's memory into a scoped store")
@@ -504,6 +699,17 @@ class PostgresStore(BaseStore):
         return _row_to_item(_normalize_row(rows[0]))
 
     async def update(self, memory_id: str, **kwargs: object) -> MemoryItem:
+        async with self.mutation():
+            return await self._update_transactional(
+                memory_id,
+                **kwargs,
+            )
+
+    async def _update_transactional(
+        self,
+        memory_id: str,
+        **kwargs: object,
+    ) -> MemoryItem:
         current = await self.get_raw(memory_id)
         if current is None:
             raise MemoryNotFoundError(memory_id)
@@ -611,6 +817,18 @@ class PostgresStore(BaseStore):
         return refreshed
 
     async def delete(self, memory_id: str, hard: bool = False) -> bool:
+        async with self.mutation():
+            return await self._delete_transactional(
+                memory_id,
+                hard=hard,
+            )
+
+    async def _delete_transactional(
+        self,
+        memory_id: str,
+        *,
+        hard: bool,
+    ) -> bool:
         rows = await self._fetch(
             "SELECT user_id, tenant_id, agent_id FROM memories WHERE id = ?",
             (memory_id,),
@@ -840,6 +1058,20 @@ class PostgresStore(BaseStore):
         user_id: str | None = None,
         hard: bool = True,
     ) -> int:
+        async with self.mutation():
+            return await self._delete_older_than_transactional(
+                iso_cutoff,
+                user_id=user_id,
+                hard=hard,
+            )
+
+    async def _delete_older_than_transactional(
+        self,
+        iso_cutoff: str,
+        *,
+        user_id: str | None,
+        hard: bool,
+    ) -> int:
         params: list[Any] = [iso_cutoff]
         where = "created_at < ?"
         scope_sql, scope_params = self._scope_sql(user_id)
@@ -877,6 +1109,13 @@ def _json(value: object) -> str:
     import json
 
     return json.dumps(value)
+
+
+def _wal_lsn_value(value: str | None) -> int | None:
+    if value is None:
+        return None
+    upper, lower = value.split("/", 1)
+    return (int(upper, 16) << 32) + int(lower, 16)
 
 
 def _pg_embedding(blob: Any) -> NDArray[np.float32]:
