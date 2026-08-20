@@ -44,6 +44,13 @@ class ContextDBConfig(BaseSettings):
         default=1536,
         description="Embedding vector dimensionality; must match embedding_model.",
     )
+    embedding_api_key: str | None = Field(
+        default=None,
+        description=(
+            "Credential for the embedding provider. Falls back to llm_api_key "
+            "for backward compatibility."
+        ),
+    )
     llm_model: str = Field(
         default="gpt-4o-mini",
         description="LLM used for extraction, compression, and reasoning steps.",

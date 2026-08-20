@@ -22,6 +22,7 @@ def test_defaults() -> None:
     assert cfg.storage_url == "sqlite:///contextdb.db"
     assert cfg.embedding_model == "text-embedding-3-small"
     assert cfg.embedding_dim == 1536
+    assert cfg.embedding_api_key is None
     assert cfg.llm_model == "gpt-4o-mini"
     assert cfg.pii_action == "redact"
     assert cfg.retention_ttl_days == 730
@@ -46,9 +47,14 @@ def test_api_key_none_when_nothing_set(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_reads_from_contextdb_env_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CONTEXTDB_STORAGE_URL", "postgresql://localhost/ctx")
     monkeypatch.setenv("CONTEXTDB_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv(
+        "CONTEXTDB_EMBEDDING_API_KEY",
+        "embedding-secret",
+    )
     cfg = ContextDBConfig(llm_api_key="x")
     assert cfg.storage_url == "postgresql://localhost/ctx"
     assert cfg.log_level == "DEBUG"
+    assert cfg.embedding_api_key == "embedding-secret"
 
 
 def test_exception_hierarchy() -> None:

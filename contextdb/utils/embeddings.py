@@ -76,21 +76,56 @@ class OpenAIEmbedding(EmbeddingProvider):
         self._dim = _OPENAI_DIMS.get(model) or dim_override or 1536
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        return await self._embed_role(texts, role=None)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return (
+            await self._embed_role([text], role="query")
+        )[0]
+
+    async def embed_documents(
+        self,
+        texts: list[str],
+    ) -> list[list[float]]:
+        return await self._embed_role(texts, role="document")
+
+    async def _embed_role(
+        self,
+        texts: list[str],
+        *,
+        role: str | None,
+    ) -> list[list[float]]:
         if not texts:
             return []
         # OpenAI's per-call limit is 2048 inputs; chunk defensively.
         chunks = [texts[i : i + 2048] for i in range(0, len(texts), 2048)]
         out: list[list[float]] = []
         for chunk in chunks:
-            out.extend(await self._embed_with_retry(chunk))
+            out.extend(
+                await self._embed_with_retry(
+                    chunk,
+                    role=role,
+                )
+            )
         return out
 
-    async def _embed_with_retry(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_with_retry(
+        self,
+        texts: list[str],
+        *,
+        role: str | None,
+    ) -> list[list[float]]:
         delay = 1.0
         for attempt in range(self.max_retries):
             try:
                 response = await self._client.embeddings.create(
-                    model=self.model, input=texts
+                    model=self.model,
+                    input=texts,
+                    extra_headers=(
+                        {"X-ContextDB-Embedding-Role": role}
+                        if role is not None
+                        else None
+                    ),
                 )
                 return [d.embedding for d in response.data]
             except Exception:  # noqa: BLE001

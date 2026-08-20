@@ -9,6 +9,7 @@ from contextdb.utils.embeddings import (
     CachedEmbeddingProvider,
     EmbeddingProvider,
     MockEmbedding,
+    OpenAIEmbedding,
     get_embedding_provider,
 )
 
@@ -62,3 +63,25 @@ async def test_cache_separates_query_and_document_roles() -> None:
     assert await cached.embed_query("same text") == [1.0]
     assert await cached.embed_documents(["same text"]) == [[2.0]]
     assert await cached.embed_query("same text") == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_transport_forwards_embedding_role() -> None:
+    provider = object.__new__(OpenAIEmbedding)
+    calls: list[tuple[list[str], str | None]] = []
+
+    async def fake_embed(
+        texts: list[str],
+        *,
+        role: str | None,
+    ) -> list[list[float]]:
+        calls.append((texts, role))
+        return [[1.0] for _text in texts]
+
+    provider._embed_with_retry = fake_embed  # type: ignore[method-assign]
+    assert await provider.embed_query("query") == [1.0]
+    assert await provider.embed_documents(["document"]) == [[1.0]]
+    assert calls == [
+        (["query"], "query"),
+        (["document"], "document"),
+    ]
