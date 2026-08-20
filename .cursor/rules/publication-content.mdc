@@ -1,0 +1,36 @@
+---
+description: SEO, AEO, examples, links, and claim gate for every publication
+alwaysApply: true
+---
+
+# Publication Content Gate
+
+Applies to releases, package pages, READMEs, changelogs, launch posts, public
+PRs, docs intros, landing pages, and announcements.
+
+Before publishing, include:
+
+1. A human title containing the category, customer job, and product name.
+2. An answer-first summary that explains what shipped, for whom, and why.
+3. The world shift or old workflow this makes obsolete.
+4. Install/get-started commands and at least one runnable code example.
+5. Two or more concrete use cases tied to named users or buyer roles.
+6. Descriptive links to source, docs, package registries, changelog, examples,
+   related guides, and the lowest-friction CTA.
+7. Direct FAQ questions and concise answers that search/answer engines can quote.
+8. Current status, limitations, compatibility, and migration/upgrade guidance.
+9. A proof object: measured number, JSON, code, screenshot, or verified behavior.
+
+SEO/AEO:
+
+- Use the customer's vocabulary in title, opening, headings, links, and examples.
+- Answer the primary query in the first paragraph; never bury the definition.
+- Use descriptive link text, not "here" or bare URLs.
+- Include canonical package/product names consistently.
+
+Hype must be earned from concrete objects and defensible measurements. Never
+invent a superlative, SLA, customer, benchmark, scale result, or comparison.
+Alpha/beta/planned status stays explicit.
+
+No publication is complete until every hyperlink resolves, examples run, claims
+are substantiated, and one clear next action is visible.
