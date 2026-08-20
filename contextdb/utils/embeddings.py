@@ -46,6 +46,10 @@ class EmbeddingProvider(ABC):
         """Embed stored memory/document text."""
         return await self.embed(texts)
 
+    async def close(self) -> None:
+        """Release provider resources. Default providers own none."""
+        return None
+
 
 class OpenAIEmbedding(EmbeddingProvider):
     """OpenAI embedding API wrapper with exponential-backoff retry.
@@ -137,6 +141,9 @@ class OpenAIEmbedding(EmbeddingProvider):
 
     def dimension(self) -> int:
         return self._dim
+
+    async def close(self) -> None:
+        await self._client.close()
 
 
 class SentenceTransformerEmbedding(EmbeddingProvider):
@@ -280,6 +287,9 @@ class CachedEmbeddingProvider(EmbeddingProvider):
     def dimension(self) -> int:
         return self._inner.dimension()
 
+    async def close(self) -> None:
+        await self._inner.close()
+
 
 class TimeoutEmbeddingProvider(EmbeddingProvider):
     """Fail an embedding call after ``timeout_seconds`` so voice turns can degrade."""
@@ -308,6 +318,9 @@ class TimeoutEmbeddingProvider(EmbeddingProvider):
 
     def dimension(self) -> int:
         return self._inner.dimension()
+
+    async def close(self) -> None:
+        await self._inner.close()
 
 
 def wrap_embedder(

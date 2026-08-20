@@ -80,6 +80,7 @@ class ContextDB:
         clock: Clock | None = None,
         trust_policy: TrustPolicy | None = None,
         postgres_pool: Any | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self.config = config
         self.user_id = user_id
@@ -94,7 +95,8 @@ class ContextDB:
         self._postgres_pool = postgres_pool
         self._store: BaseStore | None = None
         self._hooks: dict[str, list[Callable[..., Any]]] = {}
-        self._embedder: EmbeddingProvider | None = None
+        self._embedder: EmbeddingProvider | None = embedding_provider
+        self._owns_embedder = embedding_provider is None
         self._llm: LLMProvider | None = None
         self._pii: PIIDetector | None = None
         self._graphs: dict[str, BaseGraph] = {}
@@ -145,19 +147,20 @@ class ContextDB:
         if self._initialized:
             return
         # Core building blocks
-        self._embedder = wrap_embedder(
-            get_embedding_provider(
-                self.config.embedding_model,
-                (
-                    self.config.embedding_api_key
-                    or self.config.llm_api_key
+        if self._embedder is None:
+            self._embedder = wrap_embedder(
+                get_embedding_provider(
+                    self.config.embedding_model,
+                    (
+                        self.config.embedding_api_key
+                        or self.config.llm_api_key
+                    ),
+                    dimension=self.config.embedding_dim,
+                    base_url=self.config.embedding_base_url,
                 ),
-                dimension=self.config.embedding_dim,
-                base_url=self.config.embedding_base_url,
-            ),
-            cache_size=self.config.embedding_cache_size,
-            timeout_seconds=self.config.embed_timeout_seconds,
-        )
+                cache_size=self.config.embedding_cache_size,
+                timeout_seconds=self.config.embed_timeout_seconds,
+            )
         dim = self._embedder.dimension()
         self._store = open_store(
             self.config.storage_url,
@@ -1579,6 +1582,10 @@ class ContextDB:
             self._consolidation_task = None
         if self._store is not None:
             await self._store.close()
+            self._store = None
+        if self._owns_embedder and self._embedder is not None:
+            await self._embedder.close()
+            self._embedder = None
         self._initialized = False
 
     async def __aenter__(self) -> ContextDB:
