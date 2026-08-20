@@ -31,6 +31,7 @@ from contextdb.core.models import (
 )
 from contextdb.core.policy import TrustPolicy
 from contextdb.pool import ContextDBPool
+from contextdb.utils.embeddings import EmbeddingProvider
 
 __version__ = "0.3.1"
 
@@ -42,6 +43,7 @@ __all__ = [
     "ContextDBError",
     "ContextDBPool",
     "Edge",
+    "EmbeddingProvider",
     "Entity",
     "FrozenClock",
     "MemoryItem",
@@ -75,6 +77,7 @@ def init(
     clock: Clock | None = None,
     trust_policy: TrustPolicy | None = None,
     postgres_pool: Any | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
     **kwargs: Any,
 ) -> ContextDB:
     """Create a :class:`ContextDB` client.
@@ -91,6 +94,8 @@ def init(
             ``CONTEXTDB_``.
         postgres_pool: Optional externally owned asyncpg pool. Valid only with
             a PostgreSQL ``storage_url``. ContextDB never closes this pool.
+        embedding_provider: Optional externally owned provider shared by the
+            host. ContextDB uses but never closes this provider.
         **kwargs: Forwarded to :class:`ContextDBConfig` if ``config`` is
             not provided.
 
@@ -107,4 +112,5 @@ def init(
         clock=clock,
         trust_policy=trust_policy,
         postgres_pool=postgres_pool,
+        embedding_provider=embedding_provider,
     )
