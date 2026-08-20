@@ -1,0 +1,34 @@
+---
+description: Binding ContextDB open-core placement rule
+alwaysApply: true
+---
+
+# Open-Core Boundary
+
+Canonical source: `OPEN_CORE.md`.
+
+> Open the single-node semantics and reference engine. Keep multi-tenant
+> coordination, operated guarantees, governance, and proof private.
+
+Before editing, classify the change:
+
+0. **No capability change** — docs/tests/build/maintenance only.
+1. **Semantic** — offline correctness: open implementation here.
+2. **Contract** — interface/schema/protocol: open here.
+3. **Reference** — minimal single-node implementation: open here.
+4. **Operated** — tenants/processes/regions/people/SLAs: private Cloud.
+
+For mixed features, add only the contract and minimal reference. Do not add the
+production coordinator, scheduler, controller, managed worker, migrations,
+deployment topology, or operations.
+
+Never add:
+
+- imports of `contextdb_cloud`;
+- paid flags, license keys, phone-home, or weaker safety;
+- hosted auth, entitlements, billing, organization control plane, enterprise
+  governance, managed service, deployment, or fleet code;
+- ambiguous functionality without explicit boundary review.
+
+Existing Apache grants are permanent. Private code can be opened later; an
+Apache grant cannot be clawed back.

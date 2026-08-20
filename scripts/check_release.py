@@ -4,6 +4,7 @@
 Run before publishing (the publish workflow runs it on every release):
 
 * the release tag must match the version in ``pyproject.toml``;
+* the open-core constitution and source boundary must pass;
 * the sdist and wheel must contain ``LICENSE`` and ``NOTICE``;
 * the archives must not contain secrets, key material, virtualenvs, or
   other scratch files (see the denylist below).
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -137,8 +139,22 @@ def check_release_tag(tag: str) -> list[str]:
     return []
 
 
+def check_open_core_boundary() -> list[str]:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "check_open_core_boundary.py")],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return []
+    detail = (result.stderr or result.stdout).strip()
+    return [f"open-core boundary check failed: {detail}"]
+
+
 def run(dist: Path | None, release_tag: str | None) -> int:
-    errors: list[str] = []
+    errors: list[str] = check_open_core_boundary()
     if dist is not None:
         errors.extend(check_dist(dist))
     if release_tag:

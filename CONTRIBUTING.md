@@ -7,7 +7,10 @@ gates.
 ## What we accept here
 
 Trust and safety correctness, local runtime fixes, adapters, docs, and
-evals. Evals win over prose: `pytest tests/evals/ -v`.
+evals. Portable contracts and minimal single-node reference implementations
+also belong here. Classify every substantial change under
+[OPEN_CORE.md](OPEN_CORE.md). Evals win over prose:
+`pytest tests/evals/ -v`.
 
 We do **not** accept:
 
@@ -15,6 +18,9 @@ We do **not** accept:
   no flags that only work against a hosted service
 - Imports of packages outside the declared dependencies
 - Changes that loosen PII-before-embed or the hash-chained audit log
+- Hosted auth, tenancy, entitlements, billing, organization control-plane,
+  enterprise governance, managed-service, deployment, migration-orchestration,
+  or fleet code
 
 ## Contributor License Agreement
 
