@@ -26,9 +26,13 @@ You may not, without a commercial agreement with Atoms AI:
 
 ## Resale and commercial agreements
 
-If your company resells ContextDB as a service or as part of a service,
-or wants OEM/embedded licensing, support, or a trademark arrangement,
-contact **contextdb@atomsai.com** before you ship.
+Apache-2.0 permits commercial use, modification, redistribution, embedding,
+and hosted use of the code, subject to its terms. No separate copyright
+license is required for those uses.
+
+If your company wants to use the ContextDB name or logo for a hosted offering,
+or wants a supported OEM arrangement, Cloud service, support, or a trademark
+agreement, contact **contextdb@atomsai.com**.
 
 ## Attribution (optional)
 

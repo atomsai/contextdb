@@ -562,7 +562,9 @@ this README ships in this tree, with no feature gates. **ContextDB** is a
 trademark; the Apache license is not a trademark license. Reselling
 ContextDB as a service, or as part of one, under the ContextDB name or
 branding requires a commercial agreement with Atoms AI — contact
-contextdb@atomsai.com (see [COMMERCIAL.md](https://github.com/atomsai/contextdb/blob/main/COMMERCIAL.md)). A public
+contextdb@atomsai.com (see [COMMERCIAL.md](https://github.com/atomsai/contextdb/blob/main/COMMERCIAL.md)).
+The binding product boundary is documented in
+[OPEN_CORE.md](https://github.com/atomsai/contextdb/blob/main/OPEN_CORE.md). A public
 credit line is optional — if you want one, use **Built with ContextDB**
 linking to this repository.
 
