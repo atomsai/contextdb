@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
-from numpy.typing import NDArray
 
 from contextdb.core.exceptions import (
     MemoryNotFoundError,
@@ -278,6 +277,7 @@ class PostgresStore(BaseStore):
         self._initialized = False
         self._adapter: _PgAdapter | None = None
         self._index: VectorIndex | None = vector_index
+        self._index_items: dict[str, MemoryItem] = {}
         self._embedding_dim = embedding_dim
         self._index_loaded = False
         self._loaded_revision: int | None = None
@@ -349,6 +349,24 @@ class PostgresStore(BaseStore):
             (self._user_id is None or row["user_id"] == self._user_id)
             and (self._tenant_id is None or row["tenant_id"] == self._tenant_id)
             and (self._agent_id is None or row["agent_id"] == self._agent_id)
+        )
+
+    def _item_scope_allows(
+        self,
+        item: MemoryItem,
+        user_id: str | None,
+    ) -> bool:
+        scope = self._resolve_scope(user_id)
+        return (
+            (scope is None or item.user_id == scope)
+            and (
+                self._tenant_id is None
+                or item.tenant_id == self._tenant_id
+            )
+            and (
+                self._agent_id is None
+                or item.agent_id == self._agent_id
+            )
         )
 
     def _scope_sql(self, user_id: str | None = None) -> tuple[str, list[Any]]:
@@ -548,19 +566,38 @@ class PostgresStore(BaseStore):
         """
         assert self._index is not None
         self._index.remove(self._index.ids())
-        rows = await self._fetch(
-            "SELECT id, embedding, embedding_dim FROM memories "
+        self._index_items.clear()
+        scope_sql, scope_params = self._scope_sql()
+        sql = (
+            "SELECT * FROM memories "
             "WHERE embedding IS NOT NULL AND status = 'ACTIVE' "
-            "AND embedding_dim = ?",
-            (self._embedding_dim,),
+            "AND embedding_dim = ?"
+        )
+        params: list[Any] = [self._embedding_dim]
+        if scope_sql:
+            sql += f" AND {scope_sql}"
+            params.extend(scope_params)
+        rows = await self._fetch(
+            sql,
+            params,
         )
         if rows:
-            ids = [row["id"] for row in rows]
+            items = [
+                _row_to_item(_normalize_row(row))
+                for row in rows
+            ]
+            ids = [item.id for item in items]
             vectors = np.stack(
-                [_pg_embedding(row["embedding"]) for row in rows],
+                [
+                    np.asarray(item.embedding, dtype=np.float32)
+                    for item in items
+                ],
                 axis=0,
             )
             self._index.add(ids, vectors)
+            self._index_items.update(
+                {item.id: item for item in items}
+            )
         self._index_loaded = True
         self._loaded_revision = revision
 
@@ -589,6 +626,7 @@ class PostgresStore(BaseStore):
             return
         self._index_loaded = False
         self._loaded_revision = None
+        self._index_items.clear()
 
     async def add(self, item: MemoryItem) -> MemoryItem:
         async with self.mutation():
@@ -674,6 +712,9 @@ class PostgresStore(BaseStore):
 
                 def _delta(index: VectorIndex) -> None:
                     index.add([item.id], np.asarray([embedding], dtype=np.float32))
+                    self._index_items[item.id] = item.model_copy(
+                        deep=True
+                    )
 
                 self._sync_index_after_write(revision, _delta)
             else:
@@ -800,14 +841,24 @@ class PostgresStore(BaseStore):
             revision = await self._bump_revision()
             if "embedding" in kwargs:
                 new_embedding = kwargs["embedding"]
+                updated_item = current.model_copy(
+                    update=kwargs,
+                    deep=True,
+                )
 
                 def _delta(index: VectorIndex) -> None:
                     index.remove([memory_id])
-                    if new_embedding is not None:
+                    if (
+                        new_embedding is not None
+                        and updated_item.status == MemoryStatus.ACTIVE
+                    ):
                         index.add(
                             [memory_id],
                             np.asarray([new_embedding], dtype=np.float32),
                         )
+                        self._index_items[memory_id] = updated_item
+                    else:
+                        self._index_items.pop(memory_id, None)
 
                 self._sync_index_after_write(revision, _delta)
             else:
@@ -851,6 +902,7 @@ class PostgresStore(BaseStore):
 
             def _delta(index: VectorIndex) -> None:
                 index.remove([memory_id])
+                self._index_items.pop(memory_id, None)
 
             self._sync_index_after_write(revision, _delta)
         return True
@@ -864,17 +916,14 @@ class PostgresStore(BaseStore):
     ) -> list[MemoryItem]:
         index = await self._ensure_index()
         query = np.asarray(embedding, dtype=np.float32)
-        scope_sql, scope_params = self._scope_sql(user_id)
-        # Scope candidates BEFORE ranking: the allowlist comes from the
-        # authoritative SQL scope, so out-of-scope vectors never compete
-        # for the candidate budget (and a large foreign tenant cannot
-        # starve an in-scope hit).
-        allow_sql = (
-            "SELECT id FROM memories WHERE status = 'ACTIVE' AND embedding IS NOT NULL"
-        )
-        if scope_sql:
-            allow_sql += f" AND {scope_sql}"
-        candidate_ids = {row["id"] for row in await self._fetch(allow_sql, scope_params)}
+        # The revision-gated cache was loaded from this store's fixed
+        # tenant/project scope. Apply the per-call user partition in memory
+        # before ranking so foreign users never compete for top-k.
+        candidate_ids = {
+            memory_id
+            for memory_id, item in self._index_items.items()
+            if self._item_scope_allows(item, user_id)
+        }
         if not candidate_ids:
             return []
         # Fetch extra only to allow for post-filter culling.
@@ -885,23 +934,14 @@ class PostgresStore(BaseStore):
         )
         if not raw:
             return []
-        ids = [mid for mid, _ in raw]
-        placeholders = ",".join(["?"] * len(ids))
-        sql = f"SELECT * FROM memories WHERE id IN ({placeholders})"
-        params: list[Any] = list(ids)
-        if scope_sql:
-            sql += f" AND {scope_sql}"
-            params.extend(scope_params)
-        rows = await self._fetch(sql, params)
-        items_by_id = {row["id"]: _row_to_item(_normalize_row(row)) for row in rows}
         results: list[MemoryItem] = []
         for mid, _ in raw:
-            item = items_by_id.get(mid)
+            item = self._index_items.get(mid)
             if item is None or item.status != MemoryStatus.ACTIVE:
                 continue
             if filters and not _passes_filters(item, filters):
                 continue
-            results.append(item)
+            results.append(item.model_copy(deep=True))
             if len(results) >= top_k:
                 break
         return results
@@ -974,6 +1014,28 @@ class PostgresStore(BaseStore):
             f"SELECT * FROM memories WHERE {' AND '.join(clauses)}", params
         )
         return [_row_to_item(_normalize_row(row)) for row in rows]
+
+    async def list_by_entities(
+        self,
+        entity_keys: list[str],
+        status: MemoryStatus | None = MemoryStatus.ACTIVE,
+        user_id: str | None = None,
+    ) -> list[MemoryItem]:
+        if status != MemoryStatus.ACTIVE:
+            return await super().list_by_entities(
+                entity_keys,
+                status=status,
+                user_id=user_id,
+            )
+        if not self._index_loaded:
+            await self._ensure_index()
+        keys = set(entity_keys)
+        return [
+            item.model_copy(deep=True)
+            for item in self._index_items.values()
+            if item.entity_key in keys
+            and self._item_scope_allows(item, user_id)
+        ]
 
     async def list_pending_consolidation(self, limit: int = 100) -> list[MemoryItem]:
         sql = (
@@ -1098,6 +1160,7 @@ class PostgresStore(BaseStore):
                 await self._pool.close()
             self._pool = None
             self._adapter = None
+            self._index_items.clear()
             self._initialized = False
 
 
@@ -1116,14 +1179,6 @@ def _wal_lsn_value(value: str | None) -> int | None:
         return None
     upper, lower = value.split("/", 1)
     return (int(upper, 16) << 32) + int(lower, 16)
-
-
-def _pg_embedding(blob: Any) -> NDArray[np.float32]:
-    if blob is None:
-        return np.zeros(0, dtype=np.float32)
-    if isinstance(blob, memoryview):
-        blob = blob.tobytes()
-    return np.frombuffer(blob, dtype=np.float32)
 
 
 def _normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:

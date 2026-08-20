@@ -32,12 +32,12 @@ The store is safe to share across processes and workers:
 * **Audit-chain appends** serialize on an advisory lock as well — the
   hash chain never forks, no matter how many workers append.
 * **Vector recall** keeps a process-local index for speed. Every write
-  bumps a global revision counter in the database; a process whose index
-  predates the current revision rebuilds from the authoritative rows
-  before serving a search. A write from worker A is therefore visible to
-  worker B's next recall — at the cost of a rebuild per foreign write
-  burst. Candidate ids are always scoped by SQL before ranking, so
-  recall never leaks across users regardless of index freshness.
+  bumps a project-scoped revision counter (and the compatibility global
+  counter). Scoped runtimes rebuild only their tenant/project rows and cache
+  immutable item snapshots beside vectors. Warm semantic recall therefore
+  needs one revision query, filters the per-call user partition before
+  ranking, and performs no candidate/item fetch. A write from worker A is
+  visible to worker B's next recall without foreign-project rebuild churn.
 
 SQLite remains the single-process backend: its slot and audit locks are
 in-process by design.
@@ -133,5 +133,6 @@ Concurrency and recall rules you must keep:
   to foreign tenants. Custom `VectorIndex` implementations must accept
   `search(query, top_k, include_ids=None)`.
 * If you keep a process-local index or cache, it must track the store
-  revision (`contextdb_meta`) so a write from another process is visible
-  to the next search.
+  project revision (`contextdb_meta`) so a write from another process is
+  visible to the next search. Cached item snapshots must be scoped before
+  ranking and returned as copies so callers cannot mutate the cache.

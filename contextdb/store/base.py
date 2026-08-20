@@ -143,6 +143,23 @@ class BaseStore(ABC):
     ) -> list[MemoryItem]:
         raise NotImplementedError
 
+    async def list_by_entities(
+        self,
+        entity_keys: list[str],
+        status: MemoryStatus | None = MemoryStatus.ACTIVE,
+        user_id: str | None = None,
+    ) -> list[MemoryItem]:
+        items: list[MemoryItem] = []
+        for entity_key in dict.fromkeys(entity_keys):
+            items.extend(
+                await self.list_by_entity(
+                    entity_key,
+                    status=status,
+                    user_id=user_id,
+                )
+            )
+        return items
+
     async def list_pending_consolidation(self, limit: int = 100) -> list[MemoryItem]:
         raise NotImplementedError
 
