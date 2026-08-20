@@ -35,6 +35,17 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     def dimension(self) -> int: ...
 
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed one retrieval query."""
+        return (await self.embed([text]))[0]
+
+    async def embed_documents(
+        self,
+        texts: list[str],
+    ) -> list[list[float]]:
+        """Embed stored memory/document text."""
+        return await self.embed(texts)
+
 
 class OpenAIEmbedding(EmbeddingProvider):
     """OpenAI embedding API wrapper with exponential-backoff retry.
@@ -105,6 +116,7 @@ class SentenceTransformerEmbedding(EmbeddingProvider):
                 "Install with `pip install pycontextdb[local]`."
             ) from exc
         self._model = SentenceTransformer(model_name)
+        self._model_name = model_name
         self._dim = int(self._model.get_sentence_embedding_dimension())
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
@@ -119,6 +131,19 @@ class SentenceTransformerEmbedding(EmbeddingProvider):
 
     def dimension(self) -> int:
         return self._dim
+
+    async def embed_query(self, text: str) -> list[float]:
+        if "e5" in self._model_name.lower():
+            text = f"query: {text}"
+        return (await self.embed([text]))[0]
+
+    async def embed_documents(
+        self,
+        texts: list[str],
+    ) -> list[list[float]]:
+        if "e5" in self._model_name.lower():
+            texts = [f"passage: {text}" for text in texts]
+        return await self.embed(texts)
 
 
 class MockEmbedding(EmbeddingProvider):
@@ -156,26 +181,66 @@ class CachedEmbeddingProvider(EmbeddingProvider):
     def __init__(self, inner: EmbeddingProvider, maxsize: int = 2048) -> None:
         self._inner = inner
         self._maxsize = maxsize
-        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._cache: OrderedDict[
+            tuple[str, str],
+            list[float],
+        ] = OrderedDict()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        if self._maxsize <= 0 or not texts:
+        return await self._embed_kind("generic", texts)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return (
+            await self._embed_kind("query", [text])
+        )[0]
+
+    async def embed_documents(
+        self,
+        texts: list[str],
+    ) -> list[list[float]]:
+        return await self._embed_kind("document", texts)
+
+    async def _embed_kind(
+        self,
+        kind: str,
+        texts: list[str],
+    ) -> list[list[float]]:
+        if not texts:
+            return []
+        if self._maxsize <= 0:
+            if kind == "query":
+                return [await self._inner.embed_query(texts[0])]
+            if kind == "document":
+                return await self._inner.embed_documents(texts)
             return await self._inner.embed(texts)
         missing: list[str] = []
         seen: set[str] = set()
         for text in texts:
-            if text in self._cache:
-                self._cache.move_to_end(text)
+            key = (kind, text)
+            if key in self._cache:
+                self._cache.move_to_end(key)
             elif text not in seen:
                 missing.append(text)
                 seen.add(text)
         if missing:
-            vectors = await self._inner.embed(missing)
+            if kind == "query":
+                vectors = list(
+                    await asyncio.gather(
+                        *[
+                            self._inner.embed_query(text)
+                            for text in missing
+                        ]
+                    )
+                )
+            elif kind == "document":
+                vectors = await self._inner.embed_documents(missing)
+            else:
+                vectors = await self._inner.embed(missing)
             for text, vector in zip(missing, vectors, strict=True):
-                self._cache[text] = vector
+                self._cache[(kind, text)] = vector
                 if len(self._cache) > self._maxsize:
                     self._cache.popitem(last=False)
-        return [self._cache[text] for text in texts]
+        return [self._cache[(kind, text)] for text in texts]
 
     def dimension(self) -> int:
         return self._inner.dimension()
@@ -190,6 +255,21 @@ class TimeoutEmbeddingProvider(EmbeddingProvider):
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return await asyncio.wait_for(self._inner.embed(texts), timeout=self._timeout)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return await asyncio.wait_for(
+            self._inner.embed_query(text),
+            timeout=self._timeout,
+        )
+
+    async def embed_documents(
+        self,
+        texts: list[str],
+    ) -> list[list[float]]:
+        return await asyncio.wait_for(
+            self._inner.embed_documents(texts),
+            timeout=self._timeout,
+        )
 
     def dimension(self) -> int:
         return self._inner.dimension()

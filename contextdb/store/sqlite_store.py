@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS memories (
     content TEXT NOT NULL,
     embedding BLOB,
     embedding_dim INTEGER,
+    embedding_model_id TEXT,
     memory_type TEXT NOT NULL DEFAULT 'FACTUAL',
     source TEXT DEFAULT '',
     metadata TEXT DEFAULT '{}',
@@ -170,6 +171,7 @@ _TRUST_COLUMNS: list[tuple[str, str]] = [
     ("session_id", "TEXT"),
     ("pii_shadow", "TEXT"),
     ("contested", "INTEGER NOT NULL DEFAULT 0"),
+    ("embedding_model_id", "TEXT"),
 ]
 
 
@@ -227,6 +229,7 @@ def _row_to_item(row: Mapping[str, Any]) -> MemoryItem:
         id=row["id"],
         content=row["content"],
         embedding=_blob_to_embedding(row["embedding"]),
+        embedding_model_id=row["embedding_model_id"],
         memory_type=MemoryType(row["memory_type"]),
         source=row["source"] or "",
         metadata=json.loads(row["metadata"] or "{}"),
@@ -288,6 +291,7 @@ class SQLiteStore(BaseStore):
         agent_id: str | None = None,
         vector_index: VectorIndex | None = None,
         embedding_dim: int = 1536,
+        embedding_model_id: str | None = None,
     ) -> None:
         self._path = _parse_storage_url(storage_url)
         self._user_id = user_id
@@ -297,6 +301,7 @@ class SQLiteStore(BaseStore):
         self._conn: aiosqlite.Connection | None = None
         self._index: VectorIndex | None = vector_index
         self._embedding_dim = embedding_dim
+        self._embedding_model_id = embedding_model_id
         self._index_loaded = False
         self._loaded_revision: int | None = None
         self._write_lock: asyncio.Lock = asyncio.Lock()
@@ -320,6 +325,15 @@ class SQLiteStore(BaseStore):
         await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.executescript(SCHEMA)
         await self._migrate(self._conn)
+        if self._embedding_model_id is not None:
+            await self._conn.execute(
+                "UPDATE memories SET embedding_model_id = ? "
+                "WHERE embedding_model_id IS NULL AND embedding_dim = ?",
+                (
+                    self._embedding_model_id,
+                    self._embedding_dim,
+                ),
+            )
         await self._conn.commit()
 
     @staticmethod
@@ -474,11 +488,18 @@ class SQLiteStore(BaseStore):
         assert self._index is not None
         conn = self._require_conn()
         self._index.remove(self._index.ids())
-        cursor = await conn.execute(
+        sql = (
             "SELECT id, embedding, embedding_dim FROM memories "
             "WHERE embedding IS NOT NULL AND status = 'ACTIVE' "
-            "AND embedding_dim = ?",
-            (self._embedding_dim,),
+            "AND embedding_dim = ?"
+        )
+        params: list[Any] = [self._embedding_dim]
+        if self._embedding_model_id is not None:
+            sql += " AND embedding_model_id = ?"
+            params.append(self._embedding_model_id)
+        cursor = await conn.execute(
+            sql,
+            params,
         )
         rows = await cursor.fetchall()
         if rows:
@@ -523,6 +544,13 @@ class SQLiteStore(BaseStore):
         if self._user_id is not None and uid is not None and uid != self._user_id:
             raise StorageError("cannot write another user's memory into a scoped store")
         item.user_id = uid
+        if item.embedding is not None and self._embedding_model_id is not None:
+            if (
+                item.embedding_model_id is not None
+                and item.embedding_model_id != self._embedding_model_id
+            ):
+                raise StorageError("memory embedding model does not match store")
+            item.embedding_model_id = self._embedding_model_id
         blob, dim = _embedding_to_blob(item.embedding)
         async with self._write_lock:
             await conn.execute(
@@ -537,11 +565,11 @@ class SQLiteStore(BaseStore):
                     superseded_by, pending_consolidation, injection_suspect,
                     corroborated_by, confirmed, confirmed_at, write_generation,
                     slot_class, slot_value, negated, tenant_id, agent_id,
-                    session_id, pii_shadow, contested
+                    session_id, pii_shadow, contested, embedding_model_id
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?
+                    ?,?,?
                 )
                 """,
                 (
@@ -587,6 +615,7 @@ class SQLiteStore(BaseStore):
                     item.session_id,
                     item.pii_shadow,
                     int(item.contested),
+                    item.embedding_model_id,
                 ),
             )
             revision = await self._bump_revision(conn)
@@ -621,10 +650,13 @@ class SQLiteStore(BaseStore):
         current = await self.get_raw(memory_id)
         if current is None:
             raise MemoryNotFoundError(memory_id)
+        if "embedding" in kwargs and self._embedding_model_id is not None:
+            kwargs["embedding_model_id"] = self._embedding_model_id
 
         allowed = {
             "content",
             "embedding",
+            "embedding_model_id",
             "metadata",
             "status",
             "source",

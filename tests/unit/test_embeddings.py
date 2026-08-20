@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from contextdb.core.exceptions import ConfigError
-from contextdb.utils.embeddings import MockEmbedding, get_embedding_provider
+from contextdb.utils.embeddings import (
+    CachedEmbeddingProvider,
+    EmbeddingProvider,
+    MockEmbedding,
+    get_embedding_provider,
+)
 
 
 @pytest.mark.asyncio
@@ -33,3 +38,27 @@ def test_factory_routes_mock() -> None:
 def test_factory_unknown_model_raises() -> None:
     with pytest.raises((ConfigError, RuntimeError)):
         get_embedding_provider("a-random-name-that-does-not-exist")
+
+
+@pytest.mark.asyncio
+async def test_cache_separates_query_and_document_roles() -> None:
+    class RoleProvider(EmbeddingProvider):
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[0.0] for _text in texts]
+
+        async def embed_query(self, text: str) -> list[float]:
+            return [1.0]
+
+        async def embed_documents(
+            self,
+            texts: list[str],
+        ) -> list[list[float]]:
+            return [[2.0] for _text in texts]
+
+        def dimension(self) -> int:
+            return 1
+
+    cached = CachedEmbeddingProvider(RoleProvider())
+    assert await cached.embed_query("same text") == [1.0]
+    assert await cached.embed_documents(["same text"]) == [[2.0]]
+    assert await cached.embed_query("same text") == [1.0]

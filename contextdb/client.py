@@ -162,6 +162,7 @@ class ContextDB:
             tenant_id=self.tenant_id,
             agent_id=self.agent_id,
             embedding_dim=dim,
+            embedding_model_id=self.config.embedding_model,
             postgres_pool=self._postgres_pool,
         )
         await self._store.initialize()
@@ -491,7 +492,9 @@ class ContextDB:
             if action == "DELETE" and decision.get("target_memory_id"):
                 await self.delete(decision["target_memory_id"])
 
-        embedding = (await self._embedder.embed([embed_text]))[0]
+        embedding = (
+            await self._embedder.embed_documents([embed_text])
+        )[0]
         now = self.clock()
         item = MemoryItem(
             content=processed,
@@ -597,7 +600,9 @@ class ContextDB:
         processed_query, _query_pii = self._pii.process(query)
         scored: list[Any]
         try:
-            query_embedding = (await self._embedder.embed([processed_query]))[0]
+            query_embedding = await self._embedder.embed_query(
+                processed_query
+            )
             scored = await self._retrieval.search_scored(
                 query, query_embedding, top_k=top_k * 3, user_id=uid
             )
@@ -744,7 +749,9 @@ class ContextDB:
         processed, pii_annotations = self._pii.process(content)
         shadow = self._pii_shadow(pii_annotations, processed)
         embed_text = shadow or processed
-        embedding = (await self._embedder.embed([embed_text]))[0]
+        embedding = (
+            await self._embedder.embed_documents([embed_text])
+        )[0]
         now = self.clock()
         item = MemoryItem(
             content=processed,
@@ -841,7 +848,11 @@ class ContextDB:
                 continue
             for fact in facts:
                 fact_content, fact_pii = self._pii.process(fact["content"])
-                embedding = (await self._embedder.embed([fact_content]))[0]
+                embedding = (
+                    await self._embedder.embed_documents(
+                        [fact_content]
+                    )
+                )[0]
                 new_item = MemoryItem(
                     content=fact_content,
                     embedding=embedding,
@@ -941,7 +952,9 @@ class ContextDB:
         kwargs: dict[str, Any] = {}
         if content is not None:
             processed, pii = self._pii.process(content)
-            embedding = (await self._embedder.embed([processed]))[0]
+            embedding = (
+                await self._embedder.embed_documents([processed])
+            )[0]
             kwargs["content"] = processed
             kwargs["embedding"] = embedding
             kwargs["pii_annotations"] = pii
