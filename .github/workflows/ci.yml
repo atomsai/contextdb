@@ -105,5 +105,6 @@ jobs:
         run: |
           pytest \
             tests/unit/test_postgres_concurrency.py \
+            tests/unit/test_postgres_connector.py \
             tests/unit/test_scoped_id_access.py \
             tests/unit/test_vector_scope.py
