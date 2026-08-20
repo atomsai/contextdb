@@ -190,6 +190,7 @@ class RetrievalEngine:
             item.id: _cosine(query_embedding, item.embedding) if item.embedding else 0.0
             for item in seed_items
         }
+        seed_by_id = {item.id: item for item in seed_items}
 
         # Per-graph rank lookup for observability.
         per_graph_ranks: dict[str, dict[str, int]] = {
@@ -209,7 +210,9 @@ class RetrievalEngine:
 
         scored: list[ScoredMemory] = []
         for mid, rrf_score in fused:
-            item = await self.store.get_raw(mid)
+            item = seed_by_id.get(mid)
+            if item is None:
+                item = await self.store.get_raw(mid)
             if item is None:
                 continue
             scored.append(

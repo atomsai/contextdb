@@ -1422,10 +1422,26 @@ class ContextDB:
         store = self._require_store()
         seen = {m.id for m in items}
         extras: list[MemoryItem] = []
+        entity_keys = [
+            item.entity_key
+            for item in items
+            if item.entity_key is not None
+        ]
+        siblings = await store.list_by_entities(
+            entity_keys,
+            user_id=user_id,
+        )
+        siblings_by_entity: dict[str, list[MemoryItem]] = {}
+        for sibling in siblings:
+            if sibling.entity_key is not None:
+                siblings_by_entity.setdefault(
+                    sibling.entity_key,
+                    [],
+                ).append(sibling)
         for item in items:
             if not item.entity_key:
                 continue
-            for sibling in await store.list_by_entity(item.entity_key, user_id=user_id):
+            for sibling in siblings_by_entity.get(item.entity_key, []):
                 if sibling.id in seen or not sibling.is_valid_at(moment):
                     continue
                 seen.add(sibling.id)

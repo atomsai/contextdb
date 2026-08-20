@@ -263,6 +263,73 @@ async def test_project_version_and_wal_token_gate_reads() -> None:
 
 
 @pytest.mark.asyncio
+async def test_warm_project_recall_uses_only_revision_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with fresh_pg_database() as url:
+        cfg = _cfg(url).model_copy(
+            update={
+                "enable_audit": False,
+                "enable_entity_graph": False,
+                "enable_multi_graph": False,
+            }
+        )
+        client = contextdb.init(
+            config=cfg,
+            tenant_id="cache-org",
+            agent_id="cache-project",
+        )
+        foreign = contextdb.init(
+            config=cfg,
+            tenant_id="cache-org",
+            agent_id="foreign-project",
+        )
+        try:
+            await client.factual.add(
+                "The caller prefers Thursday appointments.",
+                source="user_stated",
+                entity="caller",
+                attribute="preferred_day",
+                user_id="cache-user",
+            )
+            await foreign.factual.add(
+                "The caller prefers Monday appointments.",
+                source="user_stated",
+                entity="caller",
+                attribute="preferred_day",
+                user_id="cache-user",
+            )
+            await client.factual.recall(
+                "appointment preference",
+                user_id="cache-user",
+            )
+            store = client._require_store()
+            statements: list[str] = []
+            original_fetch = store._fetch
+
+            async def observed_fetch(
+                sql: str,
+                params: list[object] | tuple[object, ...] = (),
+            ) -> list[dict[str, object]]:
+                statements.append(sql)
+                return await original_fetch(sql, params)
+
+            monkeypatch.setattr(store, "_fetch", observed_fetch)
+            memories = await client.factual.recall(
+                "appointment preference",
+                user_id="cache-user",
+            )
+
+            assert memories
+            assert all("Monday" not in memory.content for memory in memories)
+            assert len(statements) == 1
+            assert "contextdb_meta" in statements[0]
+        finally:
+            await client.close()
+            await foreign.close()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_slot_writes_do_not_lose_corroboration() -> None:
     """Six workers restating the same slot value in different sessions must
     all land as independent corroboration — the cross-process slot lock
