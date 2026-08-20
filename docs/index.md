@@ -46,6 +46,9 @@ The full walkthrough is in [quickstart.md](quickstart.md). The trust model
 is specified by the evals in `tests/evals/test_trust_model.py` — where
 prose and evals disagree, the evals win.
 
+Source ingestion contracts and the local PostgreSQL/Supabase reference reader
+are documented in [connectors.md](connectors.md).
+
 ## License
 
 Apache 2.0. The SDK and trust evals are fully public; nothing in this

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Public connector contracts plus a minimal local PostgreSQL/Supabase reader
+  with stable timestamp-plus-key cursors and soft-delete mapping. Hosts retain
+  control of credentials, scheduling, retries, and memory writes.
+
 ## 0.3.2 — 2026-08-20
 
 ### Added
