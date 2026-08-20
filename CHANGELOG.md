@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.3.2 — 2026-08-20
+
+### Added
+
+- Host-owned asyncpg pools and embedding providers can be shared safely across
+  project runtimes without being closed on runtime eviction.
+- Mutations return project-scoped memory versions and Postgres WAL positions;
+  reads can require those floors and fail closed when unavailable.
+- Embeddings carry model identity and distinct query/document roles, including
+  role-aware OpenAI-compatible transport.
+- Project-scoped vector and immutable item caches remove redundant warm recall
+  queries while preserving user isolation and cross-worker coherence.
+- A durable read-audit hook lets hosted runtimes persist exact PII-processed
+  recall evidence outside the synchronous SDK audit chain.
+- The open-core constitution, PR classification, CI source scanner, and release
+  gate prevent operated Cloud capabilities from entering the Apache package.
+
+### Fixed
+
+- Memory mutation, project/global revision changes, and write audit now commit
+  in one Postgres transaction.
+- Advisory locks execute their protected work on the same transaction-bound
+  connection instead of accidentally hopping pool connections.
+- Public commercial-use guidance now matches Apache-2.0 while preserving
+  ContextDB trademark controls.
+
+`contextdb.init`, `factual.add`, `factual.recall`, and `search` remain
+backward-compatible. All new host-sharing and consistency arguments are
+optional.
+
 ## 0.3.1 — 2026-08-18
 
 ### Fixed
