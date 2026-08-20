@@ -148,7 +148,10 @@ class ContextDB:
         self._embedder = wrap_embedder(
             get_embedding_provider(
                 self.config.embedding_model,
-                self.config.llm_api_key,
+                (
+                    self.config.embedding_api_key
+                    or self.config.llm_api_key
+                ),
                 dimension=self.config.embedding_dim,
                 base_url=self.config.embedding_base_url,
             ),
