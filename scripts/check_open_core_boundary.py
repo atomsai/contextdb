@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import ast
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -11,6 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = (
     "Open the single-node semantics and reference engine. Keep multi-tenant "
     "coordination, operated guarantees, governance, and proof private."
+)
+CHANGE_CLASSES = (
+    "No capability change",
+    "Semantic",
+    "Contract",
+    "Reference",
+    "Operated",
 )
 FORBIDDEN_SOURCE_PARTS = {
     "billing",
@@ -35,6 +44,25 @@ FORBIDDEN_RUNTIME_TOKENS = {
 
 def _normalized(path: Path) -> str:
     return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def check_pr_classification(body: str) -> list[str]:
+    selected = [
+        change_class
+        for change_class in CHANGE_CLASSES
+        if re.search(
+            rf"-\s*\[[xX]\]\s*{re.escape(change_class)}\b",
+            body,
+        )
+    ]
+    if len(selected) != 1:
+        return [
+            "select exactly one open-core classification in the PR body; "
+            f"found {len(selected)}"
+        ]
+    if selected[0] == "Operated":
+        return ["Operated changes belong in private Cloud, not the public SDK"]
+    return []
 
 
 def check_source_tree(source: Path) -> list[str]:
@@ -107,6 +135,12 @@ def check_root(root: Path) -> list[str]:
 
 def main() -> int:
     errors = check_root(ROOT)
+    if os.environ.get("CONTEXTDB_REQUIRE_PR_CLASSIFICATION") == "true":
+        errors.extend(
+            check_pr_classification(
+                os.environ.get("CONTEXTDB_PR_BODY", "")
+            )
+        )
     if errors:
         print("open-core boundary check FAILED", file=sys.stderr)
         for error in errors:

@@ -56,6 +56,9 @@ jobs:
 
       - name: Open-core boundary
         run: python scripts/check_open_core_boundary.py
+        env:
+          CONTEXTDB_REQUIRE_PR_CLASSIFICATION: ${{ github.event_name == 'pull_request' }}
+          CONTEXTDB_PR_BODY: ${{ github.event.pull_request.body }}
 
       - name: Lint with ruff
         run: ruff check .
