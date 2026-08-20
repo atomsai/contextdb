@@ -51,3 +51,14 @@ def test_commercial_gate_path_is_rejected(tmp_path: Path) -> None:
     )
     errors = _module().check_source_tree(source)
     assert any("private capability path" in error for error in errors)
+
+
+def test_sdk_pr_requires_one_non_operated_classification() -> None:
+    check = _module().check_pr_classification
+    assert check("- [x] Semantic — offline correctness") == []
+    assert check("- [X] Contract — interface") == []
+    assert check("- [x] Reference — single node") == []
+    assert check("- [x] No capability change — docs") == []
+    assert check("") != []
+    assert check("- [x] Semantic\n- [x] Contract") != []
+    assert check("- [x] Operated — hosted behavior") != []
