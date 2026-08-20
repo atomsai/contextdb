@@ -75,6 +75,70 @@ async def test_consistency_versions_are_project_scoped(
 
 
 @pytest.mark.asyncio
+async def test_embedding_model_ids_prevent_same_dimension_mixing(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path}/embedding-models.db"
+    first = SQLiteStore(
+        url,
+        embedding_dim=2,
+        embedding_model_id="model-a",
+    )
+    second = SQLiteStore(
+        url,
+        embedding_dim=2,
+        embedding_model_id="model-b",
+    )
+    await first.initialize()
+    await second.initialize()
+    try:
+        memory_a = await first.add(
+            MemoryItem(content="a", embedding=[1.0, 0.0])
+        )
+        memory_b = await second.add(
+            MemoryItem(content="b", embedding=[0.0, 1.0])
+        )
+        hits_a = await first.search_by_embedding([1.0, 0.0])
+        hits_b = await second.search_by_embedding([0.0, 1.0])
+
+        assert memory_a.embedding_model_id == "model-a"
+        assert memory_b.embedding_model_id == "model-b"
+        assert [memory.id for memory in hits_a] == [memory_a.id]
+        assert [memory.id for memory in hits_b] == [memory_b.id]
+    finally:
+        await first.close()
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_embedding_rows_are_labeled_before_cutover(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path}/legacy-embedding.db"
+    legacy = SQLiteStore(url, embedding_dim=2)
+    await legacy.initialize()
+    memory = await legacy.add(
+        MemoryItem(content="legacy", embedding=[1.0, 0.0])
+    )
+    await legacy.close()
+
+    versioned = SQLiteStore(
+        url,
+        embedding_dim=2,
+        embedding_model_id="legacy-model-v1",
+    )
+    await versioned.initialize()
+    try:
+        stored = await versioned.get_raw(memory.id)
+        assert stored is not None
+        assert stored.embedding_model_id == "legacy-model-v1"
+        hits = await versioned.search_by_embedding([1.0, 0.0])
+        assert [item.id for item in hits] == [memory.id]
+    finally:
+        await versioned.close()
+
+
+@pytest.mark.asyncio
 async def test_update_fields(tmp_store: SQLiteStore) -> None:
     item = MemoryItem(content="x", embedding=[0.0] * 32)
     stored = await tmp_store.add(item)

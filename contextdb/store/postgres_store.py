@@ -266,6 +266,7 @@ class PostgresStore(BaseStore):
         vector_index: VectorIndex | None = None,
         embedding_dim: int = 1536,
         pool: Any | None = None,
+        embedding_model_id: str | None = None,
     ) -> None:
         self._url = storage_url
         self._user_id = user_id
@@ -279,6 +280,7 @@ class PostgresStore(BaseStore):
         self._index: VectorIndex | None = vector_index
         self._index_items: dict[str, MemoryItem] = {}
         self._embedding_dim = embedding_dim
+        self._embedding_model_id = embedding_model_id
         self._index_loaded = False
         self._loaded_revision: int | None = None
         self._write_lock = asyncio.Lock()
@@ -326,6 +328,14 @@ class PostgresStore(BaseStore):
             if "user_id" not in cols:
                 await _exec_schema_statement(
                     conn, "ALTER TABLE memories ADD COLUMN IF NOT EXISTS user_id TEXT"
+                )
+            if self._embedding_model_id is not None:
+                await conn.execute(
+                    "UPDATE memories SET embedding_model_id = $1 "
+                    "WHERE embedding_model_id IS NULL "
+                    "AND embedding_dim = $2",
+                    self._embedding_model_id,
+                    self._embedding_dim,
                 )
         self._initialized = True
 
@@ -574,6 +584,9 @@ class PostgresStore(BaseStore):
             "AND embedding_dim = ?"
         )
         params: list[Any] = [self._embedding_dim]
+        if self._embedding_model_id is not None:
+            sql += " AND embedding_model_id = ?"
+            params.append(self._embedding_model_id)
         if scope_sql:
             sql += f" AND {scope_sql}"
             params.extend(scope_params)
@@ -640,6 +653,13 @@ class PostgresStore(BaseStore):
         if self._user_id is not None and uid is not None and uid != self._user_id:
             raise StorageError("cannot write another user's memory into a scoped store")
         item.user_id = uid
+        if item.embedding is not None and self._embedding_model_id is not None:
+            if (
+                item.embedding_model_id is not None
+                and item.embedding_model_id != self._embedding_model_id
+            ):
+                raise StorageError("memory embedding model does not match store")
+            item.embedding_model_id = self._embedding_model_id
         blob, dim = _embedding_to_blob(item.embedding)
         async with self._write_lock:
             await self._execute(
@@ -654,11 +674,11 @@ class PostgresStore(BaseStore):
                     superseded_by, pending_consolidation, injection_suspect,
                     corroborated_by, confirmed, confirmed_at, write_generation,
                     slot_class, slot_value, negated, tenant_id, agent_id,
-                    session_id, pii_shadow, contested
+                    session_id, pii_shadow, contested, embedding_model_id
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?
+                    ?,?,?
                 )
                 """,
                 (
@@ -704,6 +724,7 @@ class PostgresStore(BaseStore):
                     item.session_id,
                     item.pii_shadow,
                     int(item.contested),
+                    item.embedding_model_id,
                 ),
             )
             revision = await self._bump_revision()
@@ -754,11 +775,14 @@ class PostgresStore(BaseStore):
         current = await self.get_raw(memory_id)
         if current is None:
             raise MemoryNotFoundError(memory_id)
+        if "embedding" in kwargs and self._embedding_model_id is not None:
+            kwargs["embedding_model_id"] = self._embedding_model_id
         sets: list[str] = []
         params: list[Any] = []
         allowed = {
             "content",
             "embedding",
+            "embedding_model_id",
             "metadata",
             "status",
             "source",

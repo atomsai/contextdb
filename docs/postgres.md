@@ -105,6 +105,16 @@ retry against the primary. Unscoped/admin stores retain a global revision for
 compatibility; every scoped write bumps both its project revision and that
 global revision in the same transaction.
 
+Every vector row also carries `embedding_model_id` in addition to its
+dimension. Query/document roles are distinct in the provider API, so
+asymmetric retrieval models can apply the correct instructions without cache
+collisions. Stores index only the configured model and dimension.
+
+For databases created before this field existed, deploy this SDK while the old
+embedding model is still configured. Initialization labels matching legacy
+rows. Do not change model IDs until a backfill has produced the target vectors;
+same-dimensional vectors from two models are not interchangeable.
+
 ## Implementing your own store
 
 Subclass `contextdb.store.base.BaseStore`. You need `initialize`, `add`,

@@ -178,6 +178,7 @@ class MemoryItem(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     content: str
     embedding: list[float] | None = None
+    embedding_model_id: str | None = None
     memory_type: MemoryType = MemoryType.FACTUAL
     source: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
