@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-08-23
+
 - Explicit deterministic `add` / `update` / `delete` / `noop` memory
   evolution with public result and error contracts, lineage, scoped hard
   deletion, content-free NOOP audit, and post-commit consistency tokens.
