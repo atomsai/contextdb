@@ -29,12 +29,19 @@ from contextdb.core.config import ContextDBConfig
 from contextdb.core.exceptions import (
     ConfigError,
     ContextDBError,
+    EvolutionOperationConflictError,
+    EvolutionTargetNotFoundError,
+    EvolutionTargetRequiredError,
     MemoryNotFoundError,
     SourceRequiredError,
+    StorageError,
 )
 from contextdb.core.models import (
     EpistemicSource,
+    EvolutionOperation,
+    EvolutionOutcome,
     MemoryConsistencyToken,
+    MemoryEvolutionResult,
     MemoryExplanation,
     MemoryItem,
     MemoryStatus,
@@ -569,6 +576,447 @@ class ContextDB:
                 )
         await self._emit("write", memory_id=stored.id, user_id=uid, outcome=outcome)
         return stored
+
+    async def evolve(
+        self,
+        operation: EvolutionOperation | str,
+        content: str | None = None,
+        *,
+        source: EpistemicSource | None = None,
+        confidence: float | None = None,
+        action_relevant: bool | None = None,
+        entity: str | None = None,
+        attribute: str | None = None,
+        target_memory_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        noop_reason: str | None = None,
+    ) -> MemoryEvolutionResult:
+        """Deterministically apply an explicit ADD, UPDATE, DELETE, or NOOP.
+
+        This path never consults the optional RL manager. ADD and UPDATE use
+        the same PII-before-embedding, slotting, injection screening, trust,
+        and per-slot serialization as :meth:`add`.
+        """
+        try:
+            requested = (
+                operation
+                if isinstance(operation, EvolutionOperation)
+                else EvolutionOperation(operation.strip().casefold())
+            )
+        except (AttributeError, ValueError) as exc:
+            raise EvolutionOperationConflictError(
+                "operation must be add, update, delete, or noop"
+            ) from exc
+
+        uid = self._resolve_user(user_id)
+        self._validate_evolution_request(
+            requested,
+            content=content,
+            entity=entity,
+            attribute=attribute,
+            target_memory_id=target_memory_id,
+            noop_reason=noop_reason,
+        )
+        if requested in {EvolutionOperation.ADD, EvolutionOperation.UPDATE}:
+            self._require_epistemic_source(source, path="evolve")
+
+        await self._ensure_init()
+        assert self._pii is not None
+        assert self._embedder is not None
+        assert self._trust is not None
+        store = self._require_store()
+
+        if requested == EvolutionOperation.NOOP:
+            assert noop_reason is not None
+            safe_reason = self._redact_for_audit(noop_reason.strip()).strip()
+            safe_reason = safe_reason[:256] or "redacted"
+            async with store.mutation():
+                verified = await self._verify_noop_reference(
+                    user_id=uid,
+                    target_memory_id=target_memory_id,
+                    entity=entity,
+                    attribute=attribute,
+                )
+                if self._audit is not None:
+                    await self._audit.log(
+                        operation="NOOP",
+                        user_id=uid,
+                        details={
+                            "operation": EvolutionOperation.NOOP.value,
+                            "reason": safe_reason,
+                        },
+                    )
+            token = await store.consistency_token()
+            return MemoryEvolutionResult(
+                requested_operation=requested,
+                applied_operation=EvolutionOperation.NOOP,
+                outcome=EvolutionOutcome.NOOP,
+                memory=verified,
+                noop_reason=safe_reason,
+                consistency_token=token,
+            )
+
+        if requested == EvolutionOperation.DELETE:
+            async with store.mutation():
+                deleted_id = await self._evolve_delete_transactional(
+                    user_id=uid,
+                    target_memory_id=target_memory_id,
+                    entity=entity,
+                    attribute=attribute,
+                )
+            token = await store.consistency_token()
+            if await store.get_raw(deleted_id) is not None:
+                raise StorageError("deleted memory row is still present")
+            if deleted_id in await store.index_ids():
+                raise StorageError("deleted memory remains in the vector index")
+            return MemoryEvolutionResult(
+                requested_operation=requested,
+                applied_operation=EvolutionOperation.DELETE,
+                outcome=EvolutionOutcome.DELETED,
+                deleted_memory_ids=[deleted_id],
+                consistency_token=token,
+            )
+
+        assert content is not None
+        resolved_entity = entity
+        resolved_attribute = attribute
+        if requested == EvolutionOperation.UPDATE and target_memory_id is not None:
+            target = await self._evolution_target(
+                target_memory_id,
+                user_id=uid,
+                require_current=True,
+            )
+            target_slot = canonicalize_slot(
+                target.entity_key,
+                target.attribute_key,
+            )
+            if target_slot is None:
+                raise EvolutionTargetRequiredError(
+                    "target memory does not resolve to an entity/attribute slot"
+                )
+            supplied_slot = canonicalize_slot(entity, attribute)
+            if supplied_slot is not None and (
+                supplied_slot.entity,
+                supplied_slot.attribute,
+            ) != (
+                target_slot.entity,
+                target_slot.attribute,
+            ):
+                raise EvolutionOperationConflictError(
+                    "target memory and requested entity/attribute identify different slots"
+                )
+            resolved_entity = target_slot.entity
+            resolved_attribute = target_slot.attribute
+
+        processed, pii_annotations = self._pii.process(content)
+        shadow = self._pii_shadow(pii_annotations, processed)
+        embedding = (
+            await self._embedder.embed_documents([shadow or processed])
+        )[0]
+        now = self.clock()
+        item = MemoryItem(
+            content=processed,
+            embedding=embedding,
+            memory_type=MemoryType.FACTUAL,
+            metadata=metadata or {},
+            event_time=now,
+            pii_annotations=pii_annotations,
+            epistemic_source=source or "user_stated",
+            confidence=confidence if confidence is not None else 1.0,
+            action_relevant=(
+                action_relevant
+                if action_relevant is not None
+                else infer_action_relevant(processed)
+            ),
+            entity_key=resolved_entity,
+            attribute_key=resolved_attribute,
+            valid_from=now,
+            pii_shadow=shadow,
+            user_id=uid,
+            corroborated_by=[speaker_id(uid, self.session_id, self.agent_id)],
+        )
+        self._apply_slot(item, raw_text=content)
+        self._screen_item(item)
+        if item.injection_suspect:
+            await self._emit(
+                "injection_suspect",
+                memory_id=item.id,
+                user_id=uid,
+                content=item.content,
+            )
+
+        async with store.mutation():
+            decision = await self._trust.evolve_write(
+                item,
+                requested,
+                user_id=uid,
+                target_memory_id=target_memory_id,
+            )
+            created_memory = (
+                decision.memory is not None
+                and decision.memory.id not in decision.previous_memory_ids
+                and decision.applied_operation
+                in {EvolutionOperation.ADD, EvolutionOperation.UPDATE}
+                and decision.outcome
+                in {
+                    EvolutionOutcome.ADDED,
+                    EvolutionOutcome.UPDATED,
+                    EvolutionOutcome.CONTESTED,
+                }
+            )
+            if (
+                created_memory
+                and self.config.enable_auto_link
+                and self._auto_linker is not None
+                and decision.memory is not None
+            ):
+                await self._auto_linker.link(
+                    decision.memory.id,
+                    {
+                        "content": decision.memory.content,
+                        "embedding": decision.memory.embedding,
+                        "event_time": decision.memory.event_time,
+                    },
+                )
+        token = await store.consistency_token()
+        if decision.memory is not None:
+            await self._emit(
+                "write",
+                memory_id=decision.memory.id,
+                user_id=uid,
+                outcome=decision.outcome.value,
+            )
+        return MemoryEvolutionResult(
+            requested_operation=requested,
+            applied_operation=decision.applied_operation,
+            outcome=decision.outcome,
+            memory=decision.memory,
+            previous_memory_ids=list(decision.previous_memory_ids),
+            noop_reason=decision.noop_reason,
+            consistency_token=token,
+        )
+
+    @staticmethod
+    def _validate_evolution_request(
+        operation: EvolutionOperation,
+        *,
+        content: str | None,
+        entity: str | None,
+        attribute: str | None,
+        target_memory_id: str | None,
+        noop_reason: str | None,
+    ) -> None:
+        has_entity = bool(entity and entity.strip())
+        has_attribute = bool(attribute and attribute.strip())
+        if has_entity != has_attribute:
+            raise EvolutionTargetRequiredError(
+                "entity and attribute must be supplied together"
+            )
+        if target_memory_id is not None and (
+            not target_memory_id.strip() or len(target_memory_id) > 256
+        ):
+            raise EvolutionTargetNotFoundError("invalid target memory id")
+
+        if operation in {EvolutionOperation.ADD, EvolutionOperation.UPDATE}:
+            if content is None or not content.strip():
+                raise EvolutionTargetRequiredError(
+                    f"{operation.value.upper()} requires nonempty content"
+                )
+            if operation == EvolutionOperation.ADD and target_memory_id is not None:
+                raise EvolutionOperationConflictError(
+                    "ADD does not accept target_memory_id"
+                )
+            if (
+                operation == EvolutionOperation.UPDATE
+                and not (has_entity and has_attribute)
+                and target_memory_id is None
+            ):
+                raise EvolutionTargetRequiredError(
+                    "UPDATE requires entity+attribute or target_memory_id"
+                )
+            return
+
+        if content is not None:
+            raise EvolutionOperationConflictError(
+                f"{operation.value.upper()} does not accept content"
+            )
+        if operation == EvolutionOperation.DELETE:
+            if target_memory_id is None and not (has_entity and has_attribute):
+                raise EvolutionTargetRequiredError(
+                    "DELETE requires target_memory_id or entity+attribute"
+                )
+            return
+
+        reason = noop_reason.strip() if noop_reason is not None else ""
+        if not reason or len(reason) > 256:
+            raise EvolutionTargetRequiredError(
+                "NOOP requires a nonempty reason of at most 256 characters"
+            )
+
+    async def _evolution_target(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None,
+        require_current: bool,
+    ) -> MemoryItem:
+        target = await self._require_store().get_raw(memory_id)
+        now = self.clock()
+        if (
+            target is None
+            or (user_id is not None and target.user_id != user_id)
+            or (
+                require_current
+                and (
+                    target.status != MemoryStatus.ACTIVE
+                    or not target.is_valid_at(now)
+                )
+            )
+        ):
+            raise EvolutionTargetNotFoundError(memory_id)
+        return target
+
+    async def _verify_noop_reference(
+        self,
+        *,
+        user_id: str | None,
+        target_memory_id: str | None,
+        entity: str | None,
+        attribute: str | None,
+    ) -> MemoryItem | None:
+        target: MemoryItem | None = None
+        if target_memory_id is not None:
+            target = await self._evolution_target(
+                target_memory_id,
+                user_id=user_id,
+                require_current=False,
+            )
+
+        slot = canonicalize_slot(entity, attribute)
+        if slot is not None:
+            if target is not None:
+                target_slot = canonicalize_slot(
+                    target.entity_key,
+                    target.attribute_key,
+                )
+                if target_slot is None or (
+                    target_slot.entity,
+                    target_slot.attribute,
+                ) != (slot.entity, slot.attribute):
+                    raise EvolutionOperationConflictError(
+                        "target memory and requested entity/attribute identify different slots"
+                    )
+            rows = await self._require_store().list_by_slot(
+                slot.entity,
+                slot.attribute,
+                user_id=user_id,
+            )
+            current = [row for row in rows if row.is_valid_at(self.clock())]
+            if not current:
+                raise EvolutionTargetNotFoundError(
+                    f"{slot.entity}/{slot.attribute}"
+                )
+        return target
+
+    async def _evolve_delete_transactional(
+        self,
+        *,
+        user_id: str | None,
+        target_memory_id: str | None,
+        entity: str | None,
+        attribute: str | None,
+    ) -> str:
+        store = self._require_store()
+        target: MemoryItem | None = None
+        slot = canonicalize_slot(entity, attribute)
+        if target_memory_id is not None:
+            target = await self._evolution_target(
+                target_memory_id,
+                user_id=user_id,
+                require_current=False,
+            )
+            target_slot = canonicalize_slot(
+                target.entity_key,
+                target.attribute_key,
+            )
+            if slot is not None and (
+                target_slot is None
+                or (target_slot.entity, target_slot.attribute)
+                != (slot.entity, slot.attribute)
+            ):
+                raise EvolutionOperationConflictError(
+                    "target memory and requested entity/attribute identify different slots"
+                )
+            slot = target_slot
+
+        if target is not None and slot is None:
+            removed = await self._forget_transactional(
+                user_id=user_id,
+                memory_id=target.id,
+            )
+            if removed != 1:
+                raise EvolutionTargetNotFoundError(target.id)
+            return target.id
+
+        if slot is None:
+            raise EvolutionTargetRequiredError(
+                "DELETE requires a resolvable target or entity+attribute"
+            )
+
+        lock = await store.slot_lock(
+            slot.entity,
+            slot.attribute,
+            user_id=user_id,
+        )
+        async with lock:
+            if target_memory_id is not None:
+                target = await self._evolution_target(
+                    target_memory_id,
+                    user_id=user_id,
+                    require_current=False,
+                )
+                target_slot = canonicalize_slot(
+                    target.entity_key,
+                    target.attribute_key,
+                )
+                if target_slot is None or (
+                    target_slot.entity,
+                    target_slot.attribute,
+                ) != (slot.entity, slot.attribute):
+                    raise EvolutionOperationConflictError(
+                        "target memory no longer resolves to the requested slot"
+                    )
+                resolved_id = target.id
+            else:
+                rows = await store.list_by_slot(
+                    slot.entity,
+                    slot.attribute,
+                    user_id=user_id,
+                )
+                now = self.clock()
+                current = [
+                    row
+                    for row in rows
+                    if row.is_valid_at(now)
+                ]
+                if not current:
+                    raise EvolutionTargetNotFoundError(
+                        f"{slot.entity}/{slot.attribute}"
+                    )
+                if len(current) != 1:
+                    raise EvolutionOperationConflictError(
+                        "slot DELETE is ambiguous; pass target_memory_id"
+                    )
+                resolved_id = current[0].id
+
+            removed = await self._forget_transactional(
+                user_id=user_id,
+                memory_id=resolved_id,
+            )
+            if removed != 1:
+                raise EvolutionTargetNotFoundError(resolved_id)
+            return resolved_id
 
     async def search(
         self,

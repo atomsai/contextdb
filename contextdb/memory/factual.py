@@ -17,7 +17,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from contextdb.core.models import EpistemicSource, MemoryItem, MemoryType
+from contextdb.core.models import (
+    EpistemicSource,
+    EvolutionOperation,
+    MemoryEvolutionResult,
+    MemoryItem,
+    MemoryType,
+)
 
 if TYPE_CHECKING:
     from contextdb.client import ContextDB
@@ -66,6 +72,36 @@ class FactualMemory:
             entity_key=entity,
             attribute_key=attribute,
             user_id=self._user(user_id),
+        )
+
+    async def evolve(
+        self,
+        operation: EvolutionOperation | str,
+        content: str | None = None,
+        *,
+        source: EpistemicSource | None = None,
+        confidence: float | None = None,
+        action_relevant: bool | None = None,
+        entity: str | None = None,
+        attribute: str | None = None,
+        target_memory_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        noop_reason: str | None = None,
+    ) -> MemoryEvolutionResult:
+        """Apply an explicit deterministic memory-evolution operation."""
+        return await self.client.evolve(
+            operation,
+            content,
+            source=source,
+            confidence=confidence,
+            action_relevant=action_relevant,
+            entity=entity,
+            attribute=attribute,
+            target_memory_id=target_memory_id,
+            metadata=metadata,
+            user_id=self._user(user_id),
+            noop_reason=noop_reason,
         )
 
     async def add_fast(

@@ -26,6 +26,12 @@ async def add(content, memory_type=FACTUAL, metadata=None, event_time=None,
               source="", entity_mentions=None, *,
               epistemic_source=None, confidence=None, action_relevant=None,
               entity_key=None, attribute_key=None) -> MemoryItem
+async def evolve(operation, content=None, *, source=None, confidence=None,
+                 action_relevant=None, entity=None, attribute=None,
+                 target_memory_id=None, metadata=None, user_id=None,
+                 noop_reason=None) -> MemoryEvolutionResult
+    # Deterministic caller-selected ADD / UPDATE / DELETE / NOOP.
+    # Does not consult the optional RL manager.
 async def add_fast(content, memory_type=FACTUAL, ...) -> MemoryItem
     # Never calls an LLM. Recallable immediately; consolidate later.
 async def search(query, top_k=10, memory_type=None, time_range=None,
@@ -49,6 +55,9 @@ async def forget_user(user_id) -> int
 db.on(event, hook)  # write, recall, confirm, forget, injection_suspect, embed_fallback
 async def verify_forgotten(user_id) -> bool
 async def explain(memory_id) -> MemoryExplanation
+async def consistency_token() -> MemoryConsistencyToken
+async def require_consistency(*, min_memory_version=None,
+                              min_wal_lsn=None) -> MemoryConsistencyToken
 async def stats() -> dict
 async def consolidate(min_cluster_size=5) -> list[MemoryItem]
 async def consolidate_pending(batch_size=50) -> int
@@ -61,6 +70,7 @@ async def get_entity(name) -> dict
 
 * `db.factual` — `FactualMemory`
   * `add(..., source=, confidence=, action_relevant=, entity=, attribute=, user_id=)`
+  * `evolve(operation, content=None, source=, entity=, attribute=, target_memory_id=, noop_reason=, user_id=)`: explicit deterministic operation application
   * `add_fast(content, user_id=)` — no LLM
   * `add_many(items, user_id=)` — batch; missing source uses add_fast
   * `recall(query, top_k=5, as_of=None, user_id=, entity=, min_confidence=, include_third_party=)`
@@ -91,8 +101,10 @@ async def get_entity(name) -> dict
 
 ## Models
 
-`MemoryItem`, `Edge`, `Entity`, `RetentionPolicy`, `PIIAnnotation`,
-`MemoryType`, `MemoryStatus`, `PIIType`, `TrustPolicy`, `MemoryExplanation`.
+`MemoryItem`, `MemoryEvolutionResult`, `MemoryConsistencyToken`,
+`EvolutionOperation`, `EvolutionOutcome`, `Edge`, `Entity`, `RetentionPolicy`,
+`PIIAnnotation`, `MemoryType`, `MemoryStatus`, `PIIType`, `TrustPolicy`,
+`MemoryExplanation`.
 
 ## Errors
 
@@ -100,7 +112,10 @@ async def get_entity(name) -> dict
 `PrivacyError`, `ConfigError` (+ `SourceRequiredError`),
 `UnauthorizedError` (host API auth failed — HTTP 401), and
 `ScopeConflictError` (request scope disagrees with the authenticated
-scope — HTTP 400) derive from it.
+scope — HTTP 400) derive from it. Explicit evolution adds
+`MemoryEvolutionError`, `EvolutionOperationConflictError` (also exported as
+`EvolutionConflictError`), `EvolutionTargetRequiredError`, and
+`EvolutionTargetNotFoundError`.
 
 Load-bearing `MemoryItem` fields for the trust model: `epistemic_source`,
 `corroborated_by`, `confirmed`, `contested`, `action_relevant`,
@@ -109,3 +124,5 @@ Load-bearing `MemoryItem` fields for the trust model: `epistemic_source`,
 
 See [`contextdb/core/models.py`](https://github.com/atomsai/contextdb/blob/main/contextdb/core/models.py)
 for the authoritative definitions. Evals in `tests/evals/` win over this page.
+The full operation contract and backend limitations are in
+[`memory_evolution.md`](memory_evolution.md).

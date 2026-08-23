@@ -22,18 +22,47 @@ deterministic slotter and explicit ``factual.add`` overrides supply the keys.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from contextdb.core.clock import Clock, utc_now
-from contextdb.core.models import MemoryItem
+from contextdb.core.exceptions import (
+    EvolutionOperationConflictError,
+    EvolutionTargetNotFoundError,
+    EvolutionTargetRequiredError,
+)
+from contextdb.core.models import (
+    EvolutionOperation,
+    EvolutionOutcome,
+    MemoryItem,
+    MemoryStatus,
+)
 from contextdb.core.slots import Slot, canonical_slot_value, canonicalize_slot
 
 if TYPE_CHECKING:
     from contextdb.privacy.audit import AuditLogger
     from contextdb.store.base import BaseStore
 
-WriteOutcome = Literal["added", "corroborated", "superseded", "ignored", "contested"]
+WriteOutcome = Literal[
+    "added",
+    "corroborated",
+    "superseded",
+    "ignored",
+    "contested",
+    "noop",
+]
+
+
+@dataclass(frozen=True)
+class EvolutionWrite:
+    """Internal transaction result completed with a token by ``ContextDB``."""
+
+    applied_operation: EvolutionOperation
+    outcome: EvolutionOutcome
+    memory: MemoryItem | None
+    previous_memory_ids: tuple[str, ...] = ()
+    noop_reason: str | None = None
 
 # Heuristic action-relevance screen for writes that bypass LLM extraction
 # (add_fast, direct factual.add). False negatives here are safe — the fact
@@ -132,9 +161,6 @@ class TrustEngine:
         what happened. Falls back to a plain insert when no slot keys are
         present — you cannot dedupe what you cannot key.
         """
-        now = self.clock()
-        if item.valid_from is None:
-            item.valid_from = now
         incoming_speaker = speaker_id(user_id, item.session_id, item.agent_id)
         if incoming_speaker not in item.corroborated_by:
             item.corroborated_by = [incoming_speaker, *item.corroborated_by]
@@ -148,6 +174,8 @@ class TrustEngine:
                 item.slot_value = canonical_slot_value(item.content, slot)
 
         if not (item.entity_key and item.attribute_key):
+            if item.valid_from is None:
+                item.valid_from = self.clock()
             stored = await self.store.add(item)
             await self._log("CREATE", stored.id, user_id, {"trust": "unkeyed"})
             return stored, "added"
@@ -156,6 +184,8 @@ class TrustEngine:
             item.entity_key, item.attribute_key, user_id=user_id
         )
         async with lock:
+            now = self.clock()
+            item.valid_from = now
             return await self._write_locked(item, user_id, now, slot)
 
     async def _write_locked(
@@ -193,8 +223,13 @@ class TrustEngine:
             if cand_value != incoming_value:
                 continue
             speakers = list(candidate.corroborated_by)
-            if incoming_speaker not in speakers:
-                speakers.append(incoming_speaker)
+            if incoming_speaker in speakers:
+                await self._log_noop(
+                    user_id,
+                    reason="same_speaker_same_value",
+                )
+                return candidate, "noop"
+            speakers.append(incoming_speaker)
             updated = await self.store.update(
                 candidate.id,
                 corroboration_count=len(speakers),
@@ -287,6 +322,365 @@ class TrustEngine:
         )
         return stored, outcome
 
+    async def evolve_write(
+        self,
+        item: MemoryItem,
+        operation: EvolutionOperation,
+        user_id: str | None = None,
+        *,
+        target_memory_id: str | None = None,
+    ) -> EvolutionWrite:
+        """Apply an explicit ADD or UPDATE under the normal per-slot lock.
+
+        This method deliberately does not open a store transaction. The
+        client owns the outer mutation so memory rows, revision bumps, and
+        audit entries share one Postgres transaction.
+        """
+        if operation not in {EvolutionOperation.ADD, EvolutionOperation.UPDATE}:
+            raise ValueError("evolve_write supports only add and update")
+
+        incoming_speaker = speaker_id(user_id, item.session_id, item.agent_id)
+        if incoming_speaker not in item.corroborated_by:
+            item.corroborated_by = [incoming_speaker, *item.corroborated_by]
+
+        slot = canonicalize_slot(item.entity_key, item.attribute_key)
+        if target_memory_id is not None:
+            target = await self._evolution_target(target_memory_id, user_id)
+            target_slot = canonicalize_slot(target.entity_key, target.attribute_key)
+            if target_slot is None:
+                raise EvolutionTargetRequiredError(
+                    "target memory does not resolve to an entity/attribute slot"
+                )
+            if slot is not None and (
+                slot.entity,
+                slot.attribute,
+            ) != (
+                target_slot.entity,
+                target_slot.attribute,
+            ):
+                raise EvolutionOperationConflictError(
+                    "target memory and requested entity/attribute identify different slots"
+                )
+            slot = target_slot
+
+        if slot is not None:
+            item.entity_key = slot.entity
+            item.attribute_key = slot.attribute
+            item.slot_class = slot.slot_class
+            if item.slot_value is None:
+                item.slot_value = canonical_slot_value(item.content, slot)
+
+        if operation == EvolutionOperation.UPDATE and slot is None:
+            raise EvolutionTargetRequiredError(
+                "UPDATE requires entity+attribute or a target memory with a slot"
+            )
+
+        if slot is None:
+            if item.valid_from is None:
+                item.valid_from = self.clock()
+            stored = await self.store.add(item)
+            await self._log(
+                "CREATE",
+                stored.id,
+                user_id,
+                {"operation": operation.value, "trust": "explicit_unkeyed"},
+            )
+            return EvolutionWrite(
+                applied_operation=EvolutionOperation.ADD,
+                outcome=EvolutionOutcome.ADDED,
+                memory=stored,
+            )
+
+        lock = await self.store.slot_lock(
+            slot.entity,
+            slot.attribute,
+            user_id=user_id,
+        )
+        async with lock:
+            now = self.clock()
+            item.valid_from = now
+            if target_memory_id is not None:
+                # Re-read after acquiring the slot lock. A target resolved
+                # before waiting may have been deleted by the prior holder.
+                target = await self._evolution_target(
+                    target_memory_id,
+                    user_id,
+                    moment=now,
+                )
+                target_slot = canonicalize_slot(
+                    target.entity_key,
+                    target.attribute_key,
+                )
+                if target_slot is None or (
+                    target_slot.entity,
+                    target_slot.attribute,
+                ) != (slot.entity, slot.attribute):
+                    raise EvolutionOperationConflictError(
+                        "target memory no longer resolves to the requested slot"
+                    )
+            return await self._evolve_write_locked(
+                item,
+                operation,
+                user_id,
+                now,
+                slot,
+            )
+
+    async def _evolve_write_locked(
+        self,
+        item: MemoryItem,
+        operation: EvolutionOperation,
+        user_id: str | None,
+        now: datetime,
+        slot: Slot,
+    ) -> EvolutionWrite:
+        slot_rows = await self.store.list_by_slot(
+            slot.entity,
+            slot.attribute,
+            user_id=user_id,
+        )
+        current = [
+            candidate
+            for candidate in slot_rows
+            if candidate.id != item.id and candidate.is_valid_at(now)
+        ]
+        if len(current) > 100:
+            raise EvolutionOperationConflictError(
+                "slot has too many current occupants for bounded lineage"
+            )
+        previous_ids = tuple(sorted(candidate.id for candidate in current))
+        max_generation = max(
+            (candidate.write_generation for candidate in slot_rows),
+            default=0,
+        )
+        incoming_value = item.slot_value or normalize_value(item.content, slot)
+        incoming_speaker = speaker_id(user_id, item.session_id, item.agent_id)
+
+        if operation == EvolutionOperation.ADD:
+            if not current:
+                item.write_generation = max_generation + 1
+                stored = await self.store.add(item)
+                await self._log(
+                    "CREATE",
+                    stored.id,
+                    user_id,
+                    {
+                        "operation": operation.value,
+                        "trust": "explicit_add",
+                        "entity": slot.entity,
+                        "attribute": slot.attribute,
+                    },
+                )
+                return EvolutionWrite(
+                    applied_operation=EvolutionOperation.ADD,
+                    outcome=EvolutionOutcome.ADDED,
+                    memory=stored,
+                )
+
+            if len(current) != 1:
+                raise EvolutionOperationConflictError(
+                    f"ADD requires an empty or unambiguous slot: "
+                    f"{slot.entity}/{slot.attribute}"
+                )
+            candidate = current[0]
+            candidate_value = candidate.slot_value or normalize_value(
+                candidate.content,
+                slot,
+            )
+            if candidate_value != incoming_value:
+                raise EvolutionOperationConflictError(
+                    f"ADD conflicts with occupied slot "
+                    f"{slot.entity}/{slot.attribute}"
+                )
+            speakers = list(candidate.corroborated_by)
+            if incoming_speaker in speakers:
+                reason = "same_speaker_same_value"
+                await self._log_noop(user_id, reason=reason)
+                return EvolutionWrite(
+                    applied_operation=EvolutionOperation.NOOP,
+                    outcome=EvolutionOutcome.NOOP,
+                    memory=candidate,
+                    noop_reason=reason,
+                )
+            speakers.append(incoming_speaker)
+            updated = await self.store.update(
+                candidate.id,
+                corroboration_count=len(speakers),
+                corroborated_by=speakers,
+            )
+            await self._log(
+                "CORROBORATE",
+                candidate.id,
+                user_id,
+                {
+                    "operation": operation.value,
+                    "corroboration_count": updated.corroboration_count,
+                    "independent": len(speakers),
+                    "speaker": incoming_speaker,
+                    "entity": slot.entity,
+                    "attribute": slot.attribute,
+                },
+            )
+            return EvolutionWrite(
+                applied_operation=EvolutionOperation.UPDATE,
+                outcome=EvolutionOutcome.UPDATED,
+                memory=updated,
+                previous_memory_ids=(candidate.id,),
+            )
+
+        if not current:
+            raise EvolutionTargetNotFoundError(
+                f"{slot.entity}/{slot.attribute}"
+            )
+
+        for candidate in current:
+            candidate_value = candidate.slot_value or normalize_value(
+                candidate.content,
+                slot,
+            )
+            if candidate_value != incoming_value:
+                continue
+            speakers = list(candidate.corroborated_by)
+            if incoming_speaker in speakers:
+                reason = "same_speaker_same_value"
+                await self._log_noop(user_id, reason=reason)
+                return EvolutionWrite(
+                    applied_operation=EvolutionOperation.NOOP,
+                    outcome=EvolutionOutcome.NOOP,
+                    memory=candidate,
+                    noop_reason=reason,
+                )
+            speakers.append(incoming_speaker)
+            updated = await self.store.update(
+                candidate.id,
+                corroboration_count=len(speakers),
+                corroborated_by=speakers,
+            )
+            await self._log(
+                "CORROBORATE",
+                candidate.id,
+                user_id,
+                {
+                    "operation": operation.value,
+                    "corroboration_count": updated.corroboration_count,
+                    "independent": len(speakers),
+                    "speaker": incoming_speaker,
+                    "entity": slot.entity,
+                    "attribute": slot.attribute,
+                },
+            )
+            return EvolutionWrite(
+                applied_operation=EvolutionOperation.UPDATE,
+                outcome=EvolutionOutcome.UPDATED,
+                memory=updated,
+                previous_memory_ids=previous_ids,
+            )
+
+        same_speaker = [
+            candidate
+            for candidate in current
+            if incoming_speaker in candidate.corroborated_by
+        ]
+        other_speaker = [
+            candidate
+            for candidate in current
+            if incoming_speaker not in candidate.corroborated_by
+        ]
+        item.write_generation = max_generation + 1
+
+        if other_speaker and not same_speaker:
+            item.contested = True
+            stored = await self.store.add(item)
+            for candidate in other_speaker:
+                await self.store.update(candidate.id, contested=True)
+                await self._log(
+                    "CONFLICT",
+                    candidate.id,
+                    user_id,
+                    {
+                        "contested_by": stored.id,
+                        "entity": slot.entity,
+                        "attribute": slot.attribute,
+                        "old_value": candidate.content,
+                        "new_value": stored.content,
+                        "speaker": incoming_speaker,
+                    },
+                )
+            await self._log(
+                "CREATE",
+                stored.id,
+                user_id,
+                {
+                    "operation": operation.value,
+                    "trust": "contested",
+                    "entity": slot.entity,
+                    "attribute": slot.attribute,
+                },
+            )
+            return EvolutionWrite(
+                applied_operation=EvolutionOperation.UPDATE,
+                outcome=EvolutionOutcome.CONTESTED,
+                memory=stored,
+                previous_memory_ids=previous_ids,
+            )
+
+        stored = await self.store.add(item)
+        for candidate in current:
+            await self.store.update(
+                candidate.id,
+                valid_until=now,
+                superseded_by=stored.id,
+                contested=False,
+            )
+            await self._log(
+                "SUPERSEDE",
+                candidate.id,
+                user_id,
+                {
+                    "superseded_by": stored.id,
+                    "entity": slot.entity,
+                    "attribute": slot.attribute,
+                    "old_value": candidate.content,
+                    "new_value": stored.content,
+                    "generation": item.write_generation,
+                },
+            )
+        await self._log(
+            "CREATE",
+            stored.id,
+            user_id,
+            {
+                "operation": operation.value,
+                "trust": "superseded",
+                "entity": slot.entity,
+                "attribute": slot.attribute,
+            },
+        )
+        return EvolutionWrite(
+            applied_operation=EvolutionOperation.UPDATE,
+            outcome=EvolutionOutcome.UPDATED,
+            memory=stored,
+            previous_memory_ids=previous_ids,
+        )
+
+    async def _evolution_target(
+        self,
+        memory_id: str,
+        user_id: str | None,
+        *,
+        moment: datetime | None = None,
+    ) -> MemoryItem:
+        target = await self.store.get_raw(memory_id)
+        current_at = moment or self.clock()
+        if (
+            target is None
+            or target.status != MemoryStatus.ACTIVE
+            or (user_id is not None and target.user_id != user_id)
+            or not target.is_valid_at(current_at)
+        ):
+            raise EvolutionTargetNotFoundError(memory_id)
+        return target
+
     async def confirm(
         self,
         memory_id: str,
@@ -370,4 +764,21 @@ class TrustEngine:
                 memory_id=memory_id,
                 user_id=user_id,
                 details=details,
+            )
+
+    async def _log_noop(
+        self,
+        user_id: str | None,
+        *,
+        reason: str,
+    ) -> None:
+        """Append a content-free NOOP audit without touching memory state."""
+        if self.audit is not None:
+            await self.audit.log(
+                operation="NOOP",
+                user_id=user_id,
+                details={
+                    "operation": EvolutionOperation.NOOP.value,
+                    "reason": reason,
+                },
             )

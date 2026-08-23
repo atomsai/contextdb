@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Explicit deterministic `add` / `update` / `delete` / `noop` memory
+  evolution with public result and error contracts, lineage, scoped hard
+  deletion, content-free NOOP audit, and post-commit consistency tokens.
+  Postgres applies memory rows, revisions, and audit in one transaction;
+  ordinary `factual.add()` remains compatible and same-speaker duplicates
+  are now true no-ops.
 - Public connector contracts plus a minimal local PostgreSQL/Supabase reader
   with stable timestamp-plus-key cursors and soft-delete mapping. Hosts retain
   control of credentials, scheduling, retries, and memory writes.
