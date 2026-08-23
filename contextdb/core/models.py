@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, computed_field
@@ -63,6 +63,25 @@ class MemoryStatus(str, Enum):
     ACTIVE = "ACTIVE"
     ARCHIVED = "ARCHIVED"
     DELETED = "DELETED"
+
+
+class EvolutionOperation(str, Enum):
+    """A deterministic memory mutation requested by a caller."""
+
+    ADD = "add"
+    UPDATE = "update"
+    DELETE = "delete"
+    NOOP = "noop"
+
+
+class EvolutionOutcome(str, Enum):
+    """Closed set of outcomes produced by explicit memory evolution."""
+
+    ADDED = "added"
+    UPDATED = "updated"
+    DELETED = "deleted"
+    NOOP = "noop"
+    CONTESTED = "contested"
 
 
 class MemoryConsistencyToken(BaseModel):
@@ -352,3 +371,30 @@ class MemoryItem(BaseModel):
         if self.valid_from is not None and moment < self.valid_from:
             return False
         return not (self.valid_until is not None and moment >= self.valid_until)
+
+
+_MemoryEvolutionId = Annotated[str, Field(min_length=1, max_length=256)]
+
+
+class MemoryEvolutionResult(BaseModel):
+    """Portable result of one explicit deterministic memory operation.
+
+    ``applied_operation`` can differ from ``requested_operation``: an ADD
+    that independently corroborates an existing value applies as UPDATE,
+    while a same-speaker duplicate applies as NOOP.
+    """
+
+    requested_operation: EvolutionOperation
+    applied_operation: EvolutionOperation
+    outcome: EvolutionOutcome
+    memory: MemoryItem | None = None
+    previous_memory_ids: list[_MemoryEvolutionId] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    deleted_memory_ids: list[_MemoryEvolutionId] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    noop_reason: str | None = Field(default=None, min_length=1, max_length=256)
+    consistency_token: MemoryConsistencyToken

@@ -52,6 +52,14 @@ class VectorIndex(ABC):
     @abstractmethod
     def remove(self, ids: list[str]) -> None: ...
 
+    def purge(self, ids: list[str]) -> None:
+        """Physically remove ids when a durable row is hard-deleted.
+
+        Backends whose normal ``remove`` already compacts storage inherit
+        this implementation. Tombstone-capable indices override it.
+        """
+        self.remove(ids)
+
     @abstractmethod
     def ids(self) -> list[str]:
         """All live (searchable) ids — needed by verifiable forgetting."""
@@ -249,6 +257,12 @@ class FAISSIndex(VectorIndex):
         self._removed_ids.update(present)
         total = len(self._ids)
         if total and len(self._removed_ids) / total > self._rebuild_threshold:
+            self.rebuild()
+
+    def purge(self, ids: list[str]) -> None:
+        """Remove ids and immediately compact away deletion tombstones."""
+        self.remove(ids)
+        if self._removed_ids:
             self.rebuild()
 
     def ids(self) -> list[str]:

@@ -807,7 +807,10 @@ class SQLiteStore(BaseStore):
             await conn.commit()
 
             def _delta(index: VectorIndex) -> None:
-                index.remove([memory_id])
+                if hard:
+                    index.purge([memory_id])
+                else:
+                    index.remove([memory_id])
 
             self._sync_index_after_write(revision, _delta)
         return True

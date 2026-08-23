@@ -27,6 +27,17 @@ def test_numpy_index_add_and_search() -> None:
     assert hits[0][0] == "a"
 
 
+def test_numpy_index_purge_physically_removes_id() -> None:
+    idx = NumpyIndex(dimension=2)
+    idx.add(
+        ["a", "b"],
+        np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    idx.purge(["a"])
+    assert idx.ids() == ["b"]
+    assert idx._vectors.shape == (1, 2)
+
+
 @pytest.mark.skipif(not _HAS_FAISS, reason="faiss-cpu not installed")
 def test_faiss_remove_lazy_excludes_from_search() -> None:
     """remove() should tombstone without rebuilding; search must exclude the id."""
@@ -52,6 +63,19 @@ def test_faiss_remove_lazy_excludes_from_search() -> None:
     hits = idx.search(np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), top_k=5)
     returned_ids = [h[0] for h in hits]
     assert "id0" not in returned_ids
+
+
+@pytest.mark.skipif(not _HAS_FAISS, reason="faiss-cpu not installed")
+def test_faiss_purge_rebuilds_without_tombstone() -> None:
+    idx = FAISSIndex(dimension=2)
+    idx.add(
+        ["a", "b"],
+        np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    idx.purge(["a"])
+    assert idx.ids() == ["b"]
+    assert idx._removed_ids == set()
+    assert idx._index.ntotal == 1
 
 
 @pytest.mark.skipif(not _HAS_FAISS, reason="faiss-cpu not installed")

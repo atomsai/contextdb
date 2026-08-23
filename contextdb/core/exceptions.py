@@ -17,6 +17,31 @@ class MemoryNotFoundError(ContextDBError):
     """Raised when a memory lookup by id returns no result."""
 
 
+class MemoryEvolutionError(ContextDBError):
+    """Base class for explicit memory-evolution contract failures."""
+
+
+class EvolutionOperationConflictError(MemoryEvolutionError):
+    """Raised when an explicit operation conflicts with current memory state."""
+
+
+# Short spelling retained as a public alias for callers that do not need the
+# operation-qualified name.
+EvolutionConflictError = EvolutionOperationConflictError
+
+
+class EvolutionTargetRequiredError(MemoryEvolutionError):
+    """Raised when an operation cannot identify the slot or memory to mutate."""
+
+
+class EvolutionTargetNotFoundError(MemoryNotFoundError, MemoryEvolutionError):
+    """Raised for a missing or out-of-scope evolution target.
+
+    Foreign and missing identifiers deliberately share this error so the
+    evolution API does not become a cross-scope existence oracle.
+    """
+
+
 class StorageError(ContextDBError):
     """Raised when the underlying storage backend fails."""
 

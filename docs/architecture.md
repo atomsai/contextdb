@@ -37,10 +37,12 @@ Three pipelines operate over the storage layer:
    with the LLM (epistemic source, confidence, action_relevant, slot keys)
    → run PII detection → embed only the redacted text → write through the
    trust engine (dedupe / corroborate / supersede / contest).
-2. **Evolution** — memories age. Auto-linker mirrors each new write into
-   graph indices; consolidator merges dense semantic clusters into
-   summaries that inherit *worst-case* trust (no laundering); pruner drops
-   stale / redundant memories by policy.
+2. **Evolution** — callers can apply deterministic ADD / UPDATE / DELETE /
+   NOOP operations with lineage and consistency results. Separately, the
+   auto-linker mirrors each new write into graph indices; the consolidator
+   merges dense semantic clusters into summaries that inherit *worst-case*
+   trust (no laundering); the pruner drops stale / redundant memories by
+   policy.
 3. **Retrieval** — a query becomes an answer. The query is PII-redacted
    before embed. Query classifier picks graph weights; each graph produces
    a ranking; RRF fuses them; salience (recency × frequency × criticality)
@@ -59,6 +61,14 @@ Memories that share `(entity_key, attribute_key)` are about the same thing:
 
 `add_fast` never calls an LLM. The deterministic slotter still keys the
 write so a later consolidator cannot race a newer typed fact.
+
+`evolve()` uses this same trust path under the same slot lock, but the caller
+selects the operation. Corrections create a successor row and close the
+predecessor; they never rewrite corrected content in place. Postgres binds the
+rows, revision changes, and audit append to one transaction. Explicit deletion
+uses the existing hard-erasure path and removes the target vector rather than
+retaining a content tombstone. See
+[memory_evolution.md](memory_evolution.md) for the operation contract.
 
 ## Privacy is a layer, not an afterthought
 

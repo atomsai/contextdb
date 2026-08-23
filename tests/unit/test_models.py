@@ -7,8 +7,11 @@ from datetime import datetime, timedelta, timezone
 from contextdb.core.models import (
     Edge,
     Entity,
+    EvolutionOperation,
+    EvolutionOutcome,
     GraphType,
     MemoryConsistencyToken,
+    MemoryEvolutionResult,
     MemoryItem,
     MemoryStatus,
     MemoryType,
@@ -33,6 +36,22 @@ def test_memory_status_values() -> None:
     assert {s.value for s in MemoryStatus} == {"ACTIVE", "ARCHIVED", "DELETED"}
 
 
+def test_memory_evolution_enum_values() -> None:
+    assert {operation.value for operation in EvolutionOperation} == {
+        "add",
+        "update",
+        "delete",
+        "noop",
+    }
+    assert {outcome.value for outcome in EvolutionOutcome} == {
+        "added",
+        "updated",
+        "deleted",
+        "noop",
+        "contested",
+    }
+
+
 def test_memory_consistency_token_roundtrip() -> None:
     token = MemoryConsistencyToken(
         memory_version=42,
@@ -42,6 +61,27 @@ def test_memory_consistency_token_roundtrip() -> None:
         "memory_version": 42,
         "primary_wal_lsn": "1A/2B",
     }
+
+
+def test_memory_evolution_result_roundtrip() -> None:
+    memory = MemoryItem(content="current")
+    result = MemoryEvolutionResult(
+        requested_operation="update",
+        applied_operation="update",
+        outcome="updated",
+        memory=memory,
+        previous_memory_ids=["previous"],
+        consistency_token=MemoryConsistencyToken(memory_version=7),
+    )
+    restored = MemoryEvolutionResult.model_validate(
+        result.model_dump(mode="json")
+    )
+    assert restored.requested_operation == EvolutionOperation.UPDATE
+    assert restored.outcome == EvolutionOutcome.UPDATED
+    assert restored.memory is not None
+    assert restored.memory.id == memory.id
+    assert restored.previous_memory_ids == ["previous"]
+    assert restored.deleted_memory_ids == []
 
 
 def test_pii_type_values() -> None:

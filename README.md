@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://pypi.org/project/pycontextdb/"><img src="https://img.shields.io/pypi/v/pycontextdb.svg" alt="PyPI version"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-139%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-195%20passing-brightgreen.svg" alt="Tests"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
@@ -36,7 +36,7 @@
 | **Search latency (5K memories)** | p50 **3.9ms** · p95 **5.0ms** |
 | **Vector search (10K × 1,536d)** | p50 **0.8ms** · p95 **1.0ms** |
 | **PII detection** | 100,000+ texts/sec |
-| **Tests** | 139 passing (incl. 34 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
+| **Tests** | 195 passing (incl. 34 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
 | **Dependencies** | SQLite + NumPy (FAISS / Postgres optional) |
 
 Those search numbers are **SQLite + the in-repo mock embedder**. A recall
@@ -89,7 +89,7 @@ Databricks Lakebase gives agents a hard drive. ContextDB gives agents a brain.
 | PostgreSQL / MongoDB | Static rows; no lifecycle; no graph links | `FactualMemory` with formation, evolution, and consolidation |
 | S3 / flat files | Write-only archive; not queryable by meaning or time | `ExperientialMemory` for trajectories, reflections, and workflows |
 | Custom glue code | Brittle; rebuilt at every company; 2-4 engineering months | One `init()` call, one async SDK, one dependency |
-| *(nothing today)* | Agents never learn from outcomes | RL-trained memory manager (`ADD` / `UPDATE` / `DELETE` / `NOOP`) |
+| Ad hoc update/delete glue | Corrections overwrite history; deletion leaves vector residue | Deterministic `evolve()` operations with lineage, audit, and consistency results |
 | *(nothing today)* | Raw PII stored indefinitely; compliance risk | PII detection, typed TTLs, hash-chained audit log |
 
 ---
@@ -150,6 +150,43 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+### Explicit memory evolution
+
+When the caller already knows the operation, apply it directly:
+
+```python
+current = await db.factual.evolve(
+    "add",
+    "Customer prefers email.",
+    source="user_stated",
+    entity="user",
+    attribute="contact_preference",
+)
+assert current.memory is not None
+result = await db.factual.evolve(
+    "update",
+    "Customer prefers SMS, not email.",
+    source="user_stated",
+    target_memory_id=current.memory.id,
+)
+
+print(result.previous_memory_ids)
+print(result.memory.id)
+print(result.consistency_token.memory_version)
+```
+
+`evolve()` supports `add`, `update`, `delete`, and `noop`. Corrections create a
+successor and close the predecessor; they do not overwrite corrected content
+in place. Delete hard-removes the selected row and vector. Same-speaker
+duplicates are true no-ops and do not advance the memory version. The caller
+selects the operation; this path does not use an LLM planner or the optional RL
+manager.
+
+See the
+[explicit evolution contract](https://github.com/atomsai/contextdb/blob/main/docs/memory_evolution.md)
+for conflict, contested-slot, audit, scoping, and Postgres transaction
+semantics.
 
 ---
 

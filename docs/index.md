@@ -49,6 +49,10 @@ prose and evals disagree, the evals win.
 Source ingestion contracts and the local PostgreSQL/Supabase reference reader
 are documented in [connectors.md](connectors.md).
 
+Caller-selected `ADD` / `UPDATE` / `DELETE` / `NOOP`, lineage, audit, and
+consistency semantics are specified in
+[memory_evolution.md](memory_evolution.md).
+
 ## License
 
 Apache 2.0. The SDK and trust evals are fully public; nothing in this
