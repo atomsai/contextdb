@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.1 — 2026-08-24
+
+- NOOP audit entries now carry the existing memory ID and canonical slot
+  identifiers when a duplicate, explicit target, or unambiguous slot resolves
+  to a current memory. Ambiguous slot-only NOOPs fail closed, while all NOOPs
+  remain content-free and leave the memory version unchanged.
+
 ## 0.4.0 — 2026-08-23
 
 - Explicit deterministic `add` / `update` / `delete` / `noop` memory

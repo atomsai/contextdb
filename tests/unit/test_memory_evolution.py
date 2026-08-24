@@ -181,10 +181,12 @@ async def test_explicit_add_same_speaker_is_true_noop(
     assert [row.id for row in rows_after] == [row.id for row in rows_before]
     assert client.audit is not None
     noop = [entry for entry in await client.audit.get_history() if entry.operation == "NOOP"][-1]
-    assert noop.memory_id is None
+    assert noop.memory_id == first.memory.id
     assert noop.details == {
         "operation": "noop",
         "reason": "same_speaker_same_value",
+        "entity": "profile",
+        "attribute": "color",
     }
 
 
@@ -374,6 +376,174 @@ async def test_target_ids_are_scoped_and_missing_is_indistinguishable(
             )
     assert await client._require_store().get_raw(alice.memory.id) is not None
 
+    version = (await client.consistency_token()).memory_version
+    for target in (alice.memory.id, "missing-memory"):
+        with pytest.raises(EvolutionTargetNotFoundError):
+            await client.factual.evolve(
+                "noop",
+                target_memory_id=target,
+                noop_reason="already checked",
+                user_id="bob",
+            )
+    assert (await client.consistency_token()).memory_version == version
+    assert client.audit is not None
+    assert not [
+        entry
+        for entry in await client.audit.get_history(user_id="bob")
+        if entry.operation == "NOOP"
+    ]
+
+
+async def test_targeted_noop_returns_lineage_without_private_audit_values(
+    client: ContextDB,
+) -> None:
+    raw_content = "The profile color is blue for SSN 123-45-6789"
+    raw_user_id = "alice-private-user"
+    added = await client.factual.evolve(
+        "add",
+        raw_content,
+        source="user_stated",
+        entity="Profile",
+        attribute="Color",
+        user_id=raw_user_id,
+    )
+    assert added.memory is not None
+    assert added.memory.pii_annotations
+    version = added.consistency_token.memory_version
+
+    result = await client.factual.evolve(
+        "noop",
+        target_memory_id=added.memory.id,
+        user_id=raw_user_id,
+        noop_reason="duplicate reported by reviewer@example.com",
+    )
+
+    assert result.memory is not None
+    assert result.memory.id == added.memory.id
+    assert result.consistency_token.memory_version == version
+    assert result.noop_reason == "duplicate reported by [EMAIL]"
+    assert client.audit is not None
+    entry = [
+        entry
+        for entry in await client.audit.get_history(memory_id=added.memory.id)
+        if entry.operation == "NOOP"
+    ][-1]
+    assert entry.memory_id == added.memory.id
+    assert entry.details == {
+        "operation": "noop",
+        "reason": "duplicate reported by [EMAIL]",
+        "entity": "profile",
+        "attribute": "color",
+    }
+    serialized_details = str(entry.details)
+    for private_value in (
+        raw_content,
+        "123-45-6789",
+        "reviewer@example.com",
+        raw_user_id,
+        added.memory.content,
+        added.memory.pii_annotations[0].original,
+    ):
+        assert private_value not in serialized_details
+    assert {"content", "old_value", "new_value", "user_id", "pii_annotations"}.isdisjoint(
+        entry.details
+    )
+
+
+async def test_slot_noop_returns_unambiguous_current_memory(
+    client: ContextDB,
+) -> None:
+    added = await client.factual.evolve(
+        "add",
+        "The user has a peanut allergy",
+        source="user_stated",
+        entity="Customer",
+        attribute="Allergies",
+        user_id="alice",
+    )
+    assert added.memory is not None
+    version = added.consistency_token.memory_version
+
+    result = await client.factual.evolve(
+        "noop",
+        entity="CUSTOMER",
+        attribute="ALLERGIES",
+        user_id="alice",
+        noop_reason="already verified",
+    )
+
+    assert result.memory is not None
+    assert result.memory.id == added.memory.id
+    assert result.consistency_token.memory_version == version
+    assert client.audit is not None
+    entry = [
+        entry
+        for entry in await client.audit.get_history(memory_id=added.memory.id)
+        if entry.operation == "NOOP"
+    ][-1]
+    assert entry.details == {
+        "operation": "noop",
+        "reason": "already verified",
+        "entity": "user",
+        "attribute": "allergy",
+    }
+
+
+async def test_slot_noop_rejects_ambiguous_contested_slot(
+    client: ContextDB,
+) -> None:
+    first = await client.factual.evolve(
+        "add",
+        "The meeting is at 3pm",
+        source="user_stated",
+        entity="meeting",
+        attribute="time",
+        user_id="alice",
+    )
+    assert first.memory is not None
+    other = contextdb.init(
+        config=client.config,
+        session_id="independent-session",
+    )
+    try:
+        contested = await other.factual.evolve(
+            "update",
+            "The meeting is at 4pm",
+            source="user_stated",
+            entity="meeting",
+            attribute="time",
+            user_id="alice",
+        )
+        assert contested.outcome == EvolutionOutcome.CONTESTED
+        version = contested.consistency_token.memory_version
+        assert other.audit is not None
+        noops_before = [
+            entry
+            for entry in await other.audit.get_history(user_id="alice")
+            if entry.operation == "NOOP"
+        ]
+
+        with pytest.raises(EvolutionOperationConflictError, match="ambiguous"):
+            await other.factual.evolve(
+                "noop",
+                entity="meeting",
+                attribute="time",
+                user_id="alice",
+                noop_reason="already handled",
+            )
+
+        assert (await other.consistency_token()).memory_version == version
+        noops_after = [
+            entry
+            for entry in await other.audit.get_history(user_id="alice")
+            if entry.operation == "NOOP"
+        ]
+        assert [entry.id for entry in noops_after] == [
+            entry.id for entry in noops_before
+        ]
+    finally:
+        await other.close()
+
 
 async def test_explicit_noop_is_pii_safe_and_does_not_mutate_store(
     client: ContextDB,
@@ -454,3 +624,16 @@ async def test_existing_add_return_type_and_duplicate_id_are_compatible(
     assert isinstance(duplicate, MemoryItem)
     assert duplicate.id == first.id
     assert (await client.consistency_token()).memory_version == version
+    assert client.audit is not None
+    noop = [
+        entry
+        for entry in await client.audit.get_history(memory_id=first.id)
+        if entry.operation == "NOOP"
+    ][-1]
+    assert noop.memory_id == first.id
+    assert noop.details == {
+        "operation": "noop",
+        "reason": "same_speaker_same_value",
+        "entity": "profile",
+        "attribute": "color",
+    }
