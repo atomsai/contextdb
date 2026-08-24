@@ -33,9 +33,10 @@ canonicalized, and injection-shaped content is demoted.
 
 For an empty slot, ADD stores a new memory. If the same speaker repeats the
 same canonical slot value, the applied operation is NOOP: no row is inserted
-or updated and the memory version does not advance. The audit entry contains
-only the fixed operation and reason. A new independent speaker asserting the
-same value corroborates the current memory and applies as UPDATE.
+or updated and the memory version does not advance. The audit entry points to
+the existing memory and contains only the fixed operation and reason plus its
+canonical entity and attribute identifiers. A new independent speaker
+asserting the same value corroborates the current memory and applies as UPDATE.
 
 ADD fails with `EvolutionOperationConflictError` when the slot already holds a
 different value. Use UPDATE to correct an occupied slot.
@@ -83,9 +84,19 @@ the broader `forget_user()` and `verify_forgotten()` contracts.
 
 ## NOOP
 
-NOOP requires a nonempty reason of at most 256 characters. Optional target or
-slot references are scope-checked. The reason is passed through the configured
-PII processor before the content-free `NOOP` audit entry is appended.
+NOOP requires a nonempty reason of at most 256 characters. An optional
+`target_memory_id` must resolve to a current memory in the caller's scope. A
+slot-only reference resolves only when exactly one current occupant exists;
+an ambiguous contested slot raises `EvolutionOperationConflictError` and
+requires an explicit target. The resolved memory is returned and its ID is
+attached to the audit entry. A NOOP without a target or slot remains valid,
+returns no memory, and has no audit `memory_id`.
+
+The reason is passed through the configured PII processor and bounded to 256
+characters before the content-free `NOOP` audit entry is appended. When a
+memory resolves to a slot, the details include only the operation, processed
+reason, and canonical entity and attribute identifiers. They never include
+memory content, old or new values, raw user IDs, or PII annotation originals.
 
 NOOP does not change memory rows, vectors, or the memory version. Its result
 token therefore reports the same memory version visible before the operation

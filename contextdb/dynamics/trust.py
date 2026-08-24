@@ -225,8 +225,11 @@ class TrustEngine:
             speakers = list(candidate.corroborated_by)
             if incoming_speaker in speakers:
                 await self._log_noop(
+                    candidate.id,
                     user_id,
                     reason="same_speaker_same_value",
+                    entity=item.entity_key,
+                    attribute=item.attribute_key,
                 )
                 return candidate, "noop"
             speakers.append(incoming_speaker)
@@ -495,7 +498,13 @@ class TrustEngine:
             speakers = list(candidate.corroborated_by)
             if incoming_speaker in speakers:
                 reason = "same_speaker_same_value"
-                await self._log_noop(user_id, reason=reason)
+                await self._log_noop(
+                    candidate.id,
+                    user_id,
+                    reason=reason,
+                    entity=slot.entity,
+                    attribute=slot.attribute,
+                )
                 return EvolutionWrite(
                     applied_operation=EvolutionOperation.NOOP,
                     outcome=EvolutionOutcome.NOOP,
@@ -543,7 +552,13 @@ class TrustEngine:
             speakers = list(candidate.corroborated_by)
             if incoming_speaker in speakers:
                 reason = "same_speaker_same_value"
-                await self._log_noop(user_id, reason=reason)
+                await self._log_noop(
+                    candidate.id,
+                    user_id,
+                    reason=reason,
+                    entity=slot.entity,
+                    attribute=slot.attribute,
+                )
                 return EvolutionWrite(
                     applied_operation=EvolutionOperation.NOOP,
                     outcome=EvolutionOutcome.NOOP,
@@ -768,17 +783,26 @@ class TrustEngine:
 
     async def _log_noop(
         self,
+        memory_id: str,
         user_id: str | None,
         *,
         reason: str,
+        entity: str | None,
+        attribute: str | None,
     ) -> None:
-        """Append a content-free NOOP audit without touching memory state."""
+        """Append scoped, content-free NOOP lineage without mutating memory."""
         if self.audit is not None:
+            details: dict[str, object] = {
+                "operation": EvolutionOperation.NOOP.value,
+                "reason": reason,
+            }
+            slot = canonicalize_slot(entity, attribute)
+            if slot is not None:
+                details["entity"] = slot.entity
+                details["attribute"] = slot.attribute
             await self.audit.log(
                 operation="NOOP",
+                memory_id=memory_id,
                 user_id=user_id,
-                details={
-                    "operation": EvolutionOperation.NOOP.value,
-                    "reason": reason,
-                },
+                details=details,
             )

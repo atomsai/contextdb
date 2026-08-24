@@ -639,13 +639,26 @@ class ContextDB:
                     attribute=attribute,
                 )
                 if self._audit is not None:
+                    details: dict[str, object] = {
+                        "operation": EvolutionOperation.NOOP.value,
+                        "reason": safe_reason,
+                    }
+                    verified_slot = (
+                        canonicalize_slot(
+                            verified.entity_key,
+                            verified.attribute_key,
+                        )
+                        if verified is not None
+                        else None
+                    )
+                    if verified_slot is not None:
+                        details["entity"] = verified_slot.entity
+                        details["attribute"] = verified_slot.attribute
                     await self._audit.log(
                         operation="NOOP",
+                        memory_id=verified.id if verified is not None else None,
                         user_id=uid,
-                        details={
-                            "operation": EvolutionOperation.NOOP.value,
-                            "reason": safe_reason,
-                        },
+                        details=details,
                     )
             token = await store.consistency_token()
             return MemoryEvolutionResult(
@@ -890,12 +903,20 @@ class ContextDB:
             target = await self._evolution_target(
                 target_memory_id,
                 user_id=user_id,
-                require_current=False,
+                require_current=True,
             )
 
         slot = canonicalize_slot(entity, attribute)
-        if slot is not None:
-            if target is not None:
+        has_slot_reference = bool(entity and entity.strip()) and bool(
+            attribute and attribute.strip()
+        )
+        if has_slot_reference and slot is None:
+            raise EvolutionTargetRequiredError(
+                "NOOP entity/attribute must resolve to a slot"
+            )
+
+        if target is not None:
+            if slot is not None:
                 target_slot = canonicalize_slot(
                     target.entity_key,
                     target.attribute_key,
@@ -907,17 +928,27 @@ class ContextDB:
                     raise EvolutionOperationConflictError(
                         "target memory and requested entity/attribute identify different slots"
                     )
-            rows = await self._require_store().list_by_slot(
-                slot.entity,
-                slot.attribute,
-                user_id=user_id,
+            return target
+
+        if slot is None:
+            return None
+
+        rows = await self._require_store().list_by_slot(
+            slot.entity,
+            slot.attribute,
+            user_id=user_id,
+        )
+        current_at = self.clock()
+        current = [row for row in rows if row.is_valid_at(current_at)]
+        if not current:
+            raise EvolutionTargetNotFoundError(
+                f"{slot.entity}/{slot.attribute}"
             )
-            current = [row for row in rows if row.is_valid_at(self.clock())]
-            if not current:
-                raise EvolutionTargetNotFoundError(
-                    f"{slot.entity}/{slot.attribute}"
-                )
-        return target
+        if len(current) != 1:
+            raise EvolutionOperationConflictError(
+                "slot NOOP is ambiguous; pass target_memory_id"
+            )
+        return current[0]
 
     async def _evolve_delete_transactional(
         self,
