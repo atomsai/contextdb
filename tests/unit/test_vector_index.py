@@ -35,6 +35,7 @@ def test_numpy_index_purge_physically_removes_id() -> None:
     )
     idx.purge(["a"])
     assert idx.ids() == ["b"]
+    assert idx._positions_by_id == {"b": 0}
     assert idx._vectors.shape == (1, 2)
 
 
@@ -74,8 +75,38 @@ def test_faiss_purge_rebuilds_without_tombstone() -> None:
     )
     idx.purge(["a"])
     assert idx.ids() == ["b"]
+    assert idx._positions_by_id == {"b": 0}
     assert idx._removed_ids == set()
     assert idx._index.ntotal == 1
+
+
+@pytest.mark.skipif(not _HAS_FAISS, reason="faiss-cpu not installed")
+def test_faiss_allowlist_reconstructs_only_candidate_positions() -> None:
+    idx = FAISSIndex(dimension=2)
+    idx.add(
+        ["a", "b", "c"],
+        np.asarray([[1.0, 0.0], [0.0, 1.0], [0.8, 0.2]], dtype=np.float32),
+    )
+    inner = idx._index
+    reconstructed: list[int] = []
+
+    class TrackingIndex:
+        def reconstruct(self, position: int) -> np.ndarray:
+            reconstructed.append(position)
+            return np.asarray(inner.reconstruct(position), dtype=np.float32)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(inner, name)
+
+    idx._index = TrackingIndex()
+    hits = idx.search(
+        np.asarray([1.0, 0.0], dtype=np.float32),
+        top_k=2,
+        include_ids={"a", "c"},
+    )
+
+    assert [memory_id for memory_id, _score in hits] == ["a", "c"]
+    assert reconstructed == [0, 2]
 
 
 @pytest.mark.skipif(not _HAS_FAISS, reason="faiss-cpu not installed")

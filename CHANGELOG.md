@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.3 — 2026-09-20
+
+- High-cardinality Postgres recall now indexes cached IDs by user and entity,
+  maps vector IDs directly to candidate positions, and detaches only mutable
+  result fields at the caller boundary. This avoids whole-cache scope scans and
+  generic deep copies while preserving scoped ranking and returned-item
+  isolation.
+
 ## 0.4.2 — 2026-09-20
 
 - Recall now bounds sibling composition before deep-copying Postgres cache

@@ -30,6 +30,7 @@ from contextdb.core.models import (
     MemoryItem,
     MemoryStatus,
     MemoryType,
+    _detached_memory_copy,
 )
 from contextdb.store.base import BaseStore
 from contextdb.store.pg_sql import split_script, translate_sqlite_sql
@@ -279,6 +280,8 @@ class PostgresStore(BaseStore):
         self._adapter: _PgAdapter | None = None
         self._index: VectorIndex | None = vector_index
         self._index_items: dict[str, MemoryItem] = {}
+        self._index_ids_by_user: dict[str | None, set[str]] = {}
+        self._index_ids_by_entity: dict[str, dict[str, None]] = {}
         self._embedding_dim = embedding_dim
         self._embedding_model_id = embedding_model_id
         self._index_loaded = False
@@ -378,6 +381,35 @@ class PostgresStore(BaseStore):
                 or item.agent_id == self._agent_id
             )
         )
+
+    def _cache_index_item(self, item: MemoryItem) -> None:
+        if item.id in self._index_items:
+            self._discard_index_item(item.id)
+        self._index_items[item.id] = item
+        self._index_ids_by_user.setdefault(item.user_id, set()).add(item.id)
+        if item.entity_key is not None:
+            self._index_ids_by_entity.setdefault(item.entity_key, {})[item.id] = None
+
+    def _discard_index_item(self, memory_id: str) -> None:
+        item = self._index_items.pop(memory_id, None)
+        if item is None:
+            return
+        user_ids = self._index_ids_by_user.get(item.user_id)
+        if user_ids is not None:
+            user_ids.discard(memory_id)
+            if not user_ids:
+                self._index_ids_by_user.pop(item.user_id, None)
+        if item.entity_key is not None:
+            entity_ids = self._index_ids_by_entity.get(item.entity_key)
+            if entity_ids is not None:
+                entity_ids.pop(memory_id, None)
+                if not entity_ids:
+                    self._index_ids_by_entity.pop(item.entity_key, None)
+
+    def _clear_index_items(self) -> None:
+        self._index_items.clear()
+        self._index_ids_by_user.clear()
+        self._index_ids_by_entity.clear()
 
     def _scope_sql(self, user_id: str | None = None) -> tuple[str, list[Any]]:
         clauses: list[str] = []
@@ -576,7 +608,7 @@ class PostgresStore(BaseStore):
         """
         assert self._index is not None
         self._index.remove(self._index.ids())
-        self._index_items.clear()
+        self._clear_index_items()
         scope_sql, scope_params = self._scope_sql()
         sql = (
             "SELECT * FROM memories "
@@ -608,9 +640,8 @@ class PostgresStore(BaseStore):
                 axis=0,
             )
             self._index.add(ids, vectors)
-            self._index_items.update(
-                {item.id: item for item in items}
-            )
+            for item in items:
+                self._cache_index_item(item)
         self._index_loaded = True
         self._loaded_revision = revision
 
@@ -639,7 +670,7 @@ class PostgresStore(BaseStore):
             return
         self._index_loaded = False
         self._loaded_revision = None
-        self._index_items.clear()
+        self._clear_index_items()
 
     async def add(self, item: MemoryItem) -> MemoryItem:
         async with self.mutation():
@@ -733,9 +764,7 @@ class PostgresStore(BaseStore):
 
                 def _delta(index: VectorIndex) -> None:
                     index.add([item.id], np.asarray([embedding], dtype=np.float32))
-                    self._index_items[item.id] = item.model_copy(
-                        deep=True
-                    )
+                    self._cache_index_item(item.model_copy(deep=True))
 
                 self._sync_index_after_write(revision, _delta)
             else:
@@ -872,6 +901,7 @@ class PostgresStore(BaseStore):
 
                 def _delta(index: VectorIndex) -> None:
                     index.remove([memory_id])
+                    self._discard_index_item(memory_id)
                     if (
                         new_embedding is not None
                         and updated_item.status == MemoryStatus.ACTIVE
@@ -880,9 +910,7 @@ class PostgresStore(BaseStore):
                             [memory_id],
                             np.asarray([new_embedding], dtype=np.float32),
                         )
-                        self._index_items[memory_id] = updated_item
-                    else:
-                        self._index_items.pop(memory_id, None)
+                        self._cache_index_item(updated_item)
 
                 self._sync_index_after_write(revision, _delta)
             else:
@@ -929,7 +957,7 @@ class PostgresStore(BaseStore):
                     index.purge([memory_id])
                 else:
                     index.remove([memory_id])
-                self._index_items.pop(memory_id, None)
+                self._discard_index_item(memory_id)
 
             self._sync_index_after_write(revision, _delta)
         return True
@@ -948,13 +976,17 @@ class PostgresStore(BaseStore):
         # The revision-gated cache was loaded from this store's fixed
         # tenant/project scope. Apply the per-call user partition in memory
         # before ranking so foreign users never compete for top-k.
-        candidate_ids = {
-            memory_id
-            for memory_id, item in self._index_items.items()
-            if self._item_scope_allows(item, user_id)
-        }
-        if not candidate_ids:
+        scope = self._resolve_scope(user_id)
+        scoped_ids = (
+            None if scope is None else self._index_ids_by_user.get(scope, set())
+        )
+        if scoped_ids is not None and not scoped_ids:
             return []
+        candidate_ids = (
+            None
+            if scoped_ids is None or len(scoped_ids) == len(self._index_items)
+            else scoped_ids
+        )
         # Fetch extra only to allow for post-filter culling.
         raw = index.search(
             query,
@@ -970,7 +1002,7 @@ class PostgresStore(BaseStore):
                 continue
             if filters and not _passes_filters(item, filters):
                 continue
-            results.append(item.model_copy(deep=True) if copy_items else item)
+            results.append(_detached_memory_copy(item) if copy_items else item)
             if len(results) >= top_k:
                 break
         return results
@@ -1070,8 +1102,9 @@ class PostgresStore(BaseStore):
         excluded = exclude_ids or set()
         items: list[MemoryItem] = []
         for entity_key in dict.fromkeys(entity_keys):
-            for item in self._index_items.values():
-                if item.entity_key != entity_key:
+            for memory_id in self._index_ids_by_entity.get(entity_key, {}):
+                item = self._index_items.get(memory_id)
+                if item is None:
                     continue
                 if not self._item_scope_allows(item, user_id):
                     continue
@@ -1079,7 +1112,7 @@ class PostgresStore(BaseStore):
                     continue
                 if valid_at is not None and not item.is_valid_at(valid_at):
                     continue
-                items.append(item.model_copy(deep=True))
+                items.append(_detached_memory_copy(item))
                 if limit is not None and len(items) >= limit:
                     return items
         return items
@@ -1207,7 +1240,7 @@ class PostgresStore(BaseStore):
                 await self._pool.close()
             self._pool = None
             self._adapter = None
-            self._index_items.clear()
+            self._clear_index_items()
             self._initialized = False
 
 

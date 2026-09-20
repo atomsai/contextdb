@@ -107,7 +107,8 @@ async def test_list_by_entities_filters_and_copies_only_the_requested_limit(
         valid_from=now + timedelta(days=1),
     )
     indexed = [*entity_b, future, *entity_a]
-    store._index_items = {item.id: item for item in indexed}
+    for item in indexed:
+        store._cache_index_item(item)
     store._index_loaded = True
 
     original_model_copy = MemoryItem.model_copy
@@ -159,7 +160,16 @@ async def test_postgres_embedding_search_can_borrow_read_only_index_items(
         agent_id="agent-1",
         metadata={"nested": ["source"]},
     )
-    store._index_items = {source.id: source}
+    store._cache_index_item(source)
+    store._cache_index_item(
+        MemoryItem(
+            content="Friday is tentative",
+            embedding=[0.0, 1.0],
+            user_id="user-2",
+            tenant_id="tenant-1",
+            agent_id="agent-1",
+        )
+    )
 
     class FakeIndex:
         def search(
@@ -177,6 +187,11 @@ async def test_postgres_embedding_search_can_borrow_read_only_index_items(
         return FakeIndex()
 
     monkeypatch.setattr(store, "_ensure_index", ensure_index)
+
+    def reject_linear_scope_scan(_item: MemoryItem, _user_id: str | None) -> bool:
+        raise AssertionError("embedding search must use the user-id index")
+
+    monkeypatch.setattr(store, "_item_scope_allows", reject_linear_scope_scan)
     copied = await store.search_by_embedding(
         [1.0, 0.0],
         top_k=1,
@@ -194,6 +209,54 @@ async def test_postgres_embedding_search_can_borrow_read_only_index_items(
     assert borrowed[0] is source
     copied[0].metadata["nested"].append("caller")
     assert source.metadata == {"nested": ["source"]}
+
+
+def test_postgres_secondary_indexes_follow_cache_lifecycle() -> None:
+    store = PostgresStore(
+        "postgresql://example/contextdb",
+        tenant_id="tenant-1",
+        agent_id="agent-1",
+        pool=object(),
+    )
+    first = MemoryItem(
+        content="first",
+        user_id="user-1",
+        entity_key="entity-a",
+    )
+    second = MemoryItem(
+        content="second",
+        user_id="user-2",
+        entity_key="entity-b",
+    )
+
+    store._cache_index_item(first)
+    store._cache_index_item(second)
+
+    assert store._index_ids_by_user == {
+        "user-1": {first.id},
+        "user-2": {second.id},
+    }
+    assert list(store._index_ids_by_entity["entity-a"]) == [first.id]
+    assert list(store._index_ids_by_entity["entity-b"]) == [second.id]
+
+    replacement = first.model_copy(
+        update={"user_id": "user-3", "entity_key": "entity-c"}
+    )
+    store._cache_index_item(replacement)
+    assert "user-1" not in store._index_ids_by_user
+    assert "entity-a" not in store._index_ids_by_entity
+    assert store._index_ids_by_user["user-3"] == {first.id}
+    assert list(store._index_ids_by_entity["entity-c"]) == [first.id]
+
+    store._discard_index_item(first.id)
+    assert "user-3" not in store._index_ids_by_user
+    assert "entity-c" not in store._index_ids_by_entity
+    assert first.id not in store._index_items
+
+    store._clear_index_items()
+    assert store._index_items == {}
+    assert store._index_ids_by_user == {}
+    assert store._index_ids_by_entity == {}
 
 
 @pytest.mark.asyncio

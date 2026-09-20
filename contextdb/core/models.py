@@ -16,6 +16,7 @@ Design notes:
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -371,6 +372,31 @@ class MemoryItem(BaseModel):
         if self.valid_from is not None and moment < self.valid_from:
             return False
         return not (self.valid_until is not None and moment >= self.valid_until)
+
+
+def _detached_memory_copy(item: MemoryItem) -> MemoryItem:
+    """Detach mutable fields without deep-copying immutable scalar fields."""
+
+    return item.model_copy(
+        update={
+            "embedding": (
+                list(item.embedding) if item.embedding is not None else None
+            ),
+            "metadata": deepcopy(item.metadata),
+            "pii_annotations": [
+                annotation.model_copy(deep=True)
+                for annotation in item.pii_annotations
+            ],
+            "retention_policy": (
+                item.retention_policy.model_copy(deep=True)
+                if item.retention_policy is not None
+                else None
+            ),
+            "entity_mentions": list(item.entity_mentions),
+            "tags": list(item.tags),
+            "corroborated_by": list(item.corroborated_by),
+        }
+    )
 
 
 _MemoryEvolutionId = Annotated[str, Field(min_length=1, max_length=256)]
