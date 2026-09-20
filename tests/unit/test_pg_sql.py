@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -76,7 +76,7 @@ async def test_list_by_entities_filters_and_copies_only_the_requested_limit(
         agent_id="agent-1",
         pool=object(),
     )
-    now = datetime.now(tz=UTC)
+    now = datetime.now(tz=timezone.utc)
     entity_b = [
         MemoryItem(
             content=f"b-{index}",
