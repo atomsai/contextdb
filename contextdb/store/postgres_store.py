@@ -940,6 +940,8 @@ class PostgresStore(BaseStore):
         top_k: int = 10,
         filters: dict[str, object] | None = None,
         user_id: str | None = None,
+        *,
+        copy_items: bool = True,
     ) -> list[MemoryItem]:
         index = await self._ensure_index()
         query = np.asarray(embedding, dtype=np.float32)
@@ -968,7 +970,7 @@ class PostgresStore(BaseStore):
                 continue
             if filters and not _passes_filters(item, filters):
                 continue
-            results.append(item.model_copy(deep=True))
+            results.append(item.model_copy(deep=True) if copy_items else item)
             if len(results) >= top_k:
                 break
         return results
@@ -1047,22 +1049,40 @@ class PostgresStore(BaseStore):
         entity_keys: list[str],
         status: MemoryStatus | None = MemoryStatus.ACTIVE,
         user_id: str | None = None,
+        *,
+        exclude_ids: set[str] | None = None,
+        valid_at: datetime | None = None,
+        limit: int | None = None,
     ) -> list[MemoryItem]:
         if status != MemoryStatus.ACTIVE:
             return await super().list_by_entities(
                 entity_keys,
                 status=status,
                 user_id=user_id,
+                exclude_ids=exclude_ids,
+                valid_at=valid_at,
+                limit=limit,
             )
+        if limit is not None and limit <= 0:
+            return []
         if not self._index_loaded:
             await self._ensure_index()
-        keys = set(entity_keys)
-        return [
-            item.model_copy(deep=True)
-            for item in self._index_items.values()
-            if item.entity_key in keys
-            and self._item_scope_allows(item, user_id)
-        ]
+        excluded = exclude_ids or set()
+        items: list[MemoryItem] = []
+        for entity_key in dict.fromkeys(entity_keys):
+            for item in self._index_items.values():
+                if item.entity_key != entity_key:
+                    continue
+                if not self._item_scope_allows(item, user_id):
+                    continue
+                if item.id in excluded:
+                    continue
+                if valid_at is not None and not item.is_valid_at(valid_at):
+                    continue
+                items.append(item.model_copy(deep=True))
+                if limit is not None and len(items) >= limit:
+                    return items
+        return items
 
     async def list_pending_consolidation(self, limit: int = 100) -> list[MemoryItem]:
         sql = (

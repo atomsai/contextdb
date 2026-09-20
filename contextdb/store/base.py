@@ -12,6 +12,7 @@ from contextdb.core.models import MemoryConsistencyToken, MemoryStatus
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
+    from datetime import datetime
 
     from contextdb.core.models import MemoryItem, MemoryType
 
@@ -54,11 +55,15 @@ class BaseStore(ABC):
         top_k: int = 10,
         filters: dict[str, object] | None = None,
         user_id: str | None = None,
+        *,
+        copy_items: bool = True,
     ) -> list[MemoryItem]:
         """Return top-k most similar memories by cosine similarity.
 
         ``user_id`` filters the result. A store constructed with a fixed
         user scope ignores a conflicting per-call value and stays scoped.
+        ``copy_items=False`` is reserved for internal read-only ranking;
+        public callers receive detached items by default.
         """
 
     @abstractmethod
@@ -148,16 +153,31 @@ class BaseStore(ABC):
         entity_keys: list[str],
         status: MemoryStatus | None = MemoryStatus.ACTIVE,
         user_id: str | None = None,
+        *,
+        exclude_ids: set[str] | None = None,
+        valid_at: datetime | None = None,
+        limit: int | None = None,
     ) -> list[MemoryItem]:
+        """List scoped entity memories with optional bounded composition filters."""
+
+        if limit is not None and limit <= 0:
+            return []
+        excluded = exclude_ids or set()
         items: list[MemoryItem] = []
         for entity_key in dict.fromkeys(entity_keys):
-            items.extend(
-                await self.list_by_entity(
-                    entity_key,
-                    status=status,
-                    user_id=user_id,
-                )
+            candidates = await self.list_by_entity(
+                entity_key,
+                status=status,
+                user_id=user_id,
             )
+            for item in candidates:
+                if item.id in excluded:
+                    continue
+                if valid_at is not None and not item.is_valid_at(valid_at):
+                    continue
+                items.append(item)
+                if limit is not None and len(items) >= limit:
+                    return items
         return items
 
     async def list_pending_consolidation(self, limit: int = 100) -> list[MemoryItem]:
