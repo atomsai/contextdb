@@ -80,6 +80,7 @@ class NumpyIndex(VectorIndex):
     def __init__(self, dimension: int) -> None:
         self.dimension = dimension
         self._ids: list[str] = []
+        self._positions_by_id: dict[str, int] = {}
         self._vectors: NDArray[np.float32] = np.zeros((0, dimension), dtype=np.float32)
 
     def add(self, ids: list[str], embeddings: NDArray[np.float32]) -> None:
@@ -87,7 +88,11 @@ class NumpyIndex(VectorIndex):
             return
         reshaped = np.asarray(embeddings, dtype=np.float32).reshape(len(ids), self.dimension)
         normalized = _normalize(reshaped)
+        start = len(self._ids)
         self._ids.extend(ids)
+        self._positions_by_id.update(
+            {memory_id: start + offset for offset, memory_id in enumerate(ids)}
+        )
         self._vectors = (
             np.vstack([self._vectors, normalized]) if len(self._vectors) else normalized
         )
@@ -103,14 +108,26 @@ class NumpyIndex(VectorIndex):
         if include_ids is not None and not include_ids:
             return []
         q = _normalize(np.asarray(query, dtype=np.float32).reshape(1, self.dimension))[0]
-        scores = self._vectors @ q
         if include_ids is not None:
-            allowed = np.fromiter(
-                (mid in include_ids for mid in self._ids),
-                dtype=bool,
-                count=len(self._ids),
+            positions = np.asarray(
+                sorted(
+                    position
+                    for memory_id in include_ids
+                    if (position := self._positions_by_id.get(memory_id))
+                    is not None
+                ),
+                dtype=np.intp,
             )
-            scores = np.where(allowed, scores, -np.inf)
+            if not len(positions):
+                return []
+            scores = self._vectors[positions] @ q
+            k = min(top_k, len(positions))
+            top_idx = np.argsort(-scores)[:k]
+            return [
+                (self._ids[int(positions[i])], float(scores[i]))
+                for i in top_idx
+            ]
+        scores = self._vectors @ q
         k = min(top_k, len(self._ids))
         top_idx = np.argsort(-scores)[:k]
         return [
@@ -123,6 +140,10 @@ class NumpyIndex(VectorIndex):
         drop = set(ids)
         keep = [i for i, mid in enumerate(self._ids) if mid not in drop]
         self._ids = [self._ids[i] for i in keep]
+        self._positions_by_id = {
+            memory_id: position
+            for position, memory_id in enumerate(self._ids)
+        }
         self._vectors = self._vectors[keep] if keep else np.zeros(
             (0, self.dimension), dtype=np.float32
         )
@@ -142,6 +163,10 @@ class NumpyIndex(VectorIndex):
         payload = pickle.loads(Path(path).read_bytes())
         self.dimension = int(payload["dimension"])
         self._ids = list(payload["ids"])
+        self._positions_by_id = {
+            memory_id: position
+            for position, memory_id in enumerate(self._ids)
+        }
         self._vectors = np.asarray(payload["vectors"], dtype=np.float32)
 
     def __len__(self) -> int:
@@ -173,6 +198,7 @@ class FAISSIndex(VectorIndex):
         self.index_type = index_type
         self._index: Any = faiss.IndexFlatIP(dimension)
         self._ids: list[str] = []
+        self._positions_by_id: dict[str, int] = {}
         self._removed_ids: set[str] = set()
 
     def add(self, ids: list[str], embeddings: NDArray[np.float32]) -> None:
@@ -181,7 +207,11 @@ class FAISSIndex(VectorIndex):
         reshaped = np.asarray(embeddings, dtype=np.float32).reshape(len(ids), self.dimension)
         normalized = _normalize(reshaped)
         self._index.add(normalized)
+        start = len(self._ids)
         self._ids.extend(ids)
+        self._positions_by_id.update(
+            {memory_id: start + offset for offset, memory_id in enumerate(ids)}
+        )
         # Re-adding a previously tombstoned id clears the tombstone.
         if self._removed_ids:
             self._removed_ids.difference_update(ids)
@@ -230,14 +260,18 @@ class FAISSIndex(VectorIndex):
         IDSelector support for flat indexes varies by version; this path
         is version-proof.)
         """
-        positions = [
-            i
-            for i, mid in enumerate(self._ids)
-            if mid in include_ids and mid not in self._removed_ids
-        ]
+        positions = sorted(
+            position
+            for memory_id in include_ids
+            if memory_id not in self._removed_ids
+            and (position := self._positions_by_id.get(memory_id)) is not None
+        )
         if not positions:
             return []
-        snapshot = self._vectors_snapshot()[positions]
+        snapshot = np.stack(
+            [self._index.reconstruct(position) for position in positions],
+            axis=0,
+        ).astype(np.float32)
         q = _normalize(np.asarray(query, dtype=np.float32).reshape(1, self.dimension))[0]
         scores = snapshot @ q
         order = np.argsort(-scores)[: min(top_k, len(positions))]
@@ -251,7 +285,11 @@ class FAISSIndex(VectorIndex):
         """
         if not ids:
             return
-        present = {mid for mid in ids if mid in self._ids}
+        present = {
+            memory_id
+            for memory_id in ids
+            if memory_id in self._positions_by_id
+        }
         if not present:
             return
         self._removed_ids.update(present)
@@ -284,10 +322,15 @@ class FAISSIndex(VectorIndex):
             vectors = np.zeros((0, self.dimension), dtype=np.float32)
         self._index = self._faiss.IndexFlatIP(self.dimension)
         self._ids = []
+        self._positions_by_id = {}
         self._removed_ids.clear()
         if len(new_ids):
             self._index.add(vectors)
             self._ids = new_ids
+            self._positions_by_id = {
+                memory_id: position
+                for position, memory_id in enumerate(self._ids)
+            }
 
     def _vectors_snapshot(self) -> NDArray[np.float32]:
         # Reconstruct all current vectors from the FAISS index.
@@ -306,6 +349,10 @@ class FAISSIndex(VectorIndex):
     def load(self, path: str) -> None:
         self._index = self._faiss.read_index(f"{path}.faiss")
         self._ids = pickle.loads(Path(f"{path}.ids").read_bytes())
+        self._positions_by_id = {
+            memory_id: position
+            for position, memory_id in enumerate(self._ids)
+        }
         self._removed_ids = set()
 
     def __len__(self) -> int:

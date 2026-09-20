@@ -18,6 +18,7 @@ from contextdb.core.models import (
     PIIAnnotation,
     PIIType,
     RetentionPolicy,
+    _detached_memory_copy,
 )
 
 # --------------------------------------------------------------------------- #
@@ -221,6 +222,57 @@ def test_memory_item_defaults() -> None:
     assert m.status == MemoryStatus.ACTIVE
     assert m.entity_mentions == []
     assert m.tags == []
+
+
+def test_detached_memory_copy_isolates_every_mutable_field() -> None:
+    source = MemoryItem(
+        content="customer preference",
+        embedding=[1.0, 0.0],
+        metadata={"nested": ["source"]},
+        pii_annotations=[
+            PIIAnnotation(
+                pii_type=PIIType.EMAIL,
+                start=0,
+                end=4,
+                original="test",
+                redacted="[EMAIL]",
+            )
+        ],
+        retention_policy=RetentionPolicy(),
+        entity_mentions=["customer"],
+        tags=["booking"],
+        corroborated_by=["session-1"],
+    )
+
+    copied = _detached_memory_copy(source)
+    assert copied == source
+    assert copied is not source
+    assert copied.embedding is not source.embedding
+    assert copied.metadata is not source.metadata
+    assert copied.pii_annotations[0] is not source.pii_annotations[0]
+    assert copied.retention_policy is not source.retention_policy
+    assert copied.entity_mentions is not source.entity_mentions
+    assert copied.tags is not source.tags
+    assert copied.corroborated_by is not source.corroborated_by
+
+    assert copied.embedding is not None
+    copied.embedding.append(2.0)
+    copied.metadata["nested"].append("caller")
+    copied.pii_annotations[0].redacted = "[CHANGED]"
+    assert copied.retention_policy is not None
+    copied.retention_policy.right_to_erasure = False
+    copied.entity_mentions.append("caller")
+    copied.tags.append("caller")
+    copied.corroborated_by.append("session-2")
+
+    assert source.embedding == [1.0, 0.0]
+    assert source.metadata == {"nested": ["source"]}
+    assert source.pii_annotations[0].redacted == "[EMAIL]"
+    assert source.retention_policy is not None
+    assert source.retention_policy.right_to_erasure is True
+    assert source.entity_mentions == ["customer"]
+    assert source.tags == ["booking"]
+    assert source.corroborated_by == ["session-1"]
 
 
 def test_memory_item_unique_ids() -> None:

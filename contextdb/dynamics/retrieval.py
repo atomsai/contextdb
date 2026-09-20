@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from contextdb.core.clock import Clock, utc_now
-from contextdb.core.models import MemoryItem
+from contextdb.core.models import MemoryItem, _detached_memory_copy
 from contextdb.dynamics.salience import (
     DEFAULT_HALF_LIFE_DAYS,
     age_in_days,
@@ -229,7 +229,7 @@ class RetrievalEngine:
                 )
             scored.sort(key=lambda s: s.final_score, reverse=True)
         return [
-            replace(score, item=score.item.model_copy(deep=True))
+            replace(score, item=_detached_memory_copy(score.item))
             for score in scored[:top_k]
         ]
 
