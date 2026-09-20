@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.2 — 2026-09-20
+
 - Recall now bounds sibling composition before deep-copying Postgres cache
   entries and borrows read-only candidate references while ranking. Final
   results remain detached, and entity priority, temporal validity, user scope,
