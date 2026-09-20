@@ -1928,6 +1928,9 @@ class ContextDB:
         siblings = await store.list_by_entities(
             entity_keys,
             user_id=user_id,
+            exclude_ids=seen,
+            valid_at=moment,
+            limit=extra,
         )
         siblings_by_entity: dict[str, list[MemoryItem]] = {}
         for sibling in siblings:
@@ -1940,8 +1943,6 @@ class ContextDB:
             if not item.entity_key:
                 continue
             for sibling in siblings_by_entity.get(item.entity_key, []):
-                if sibling.id in seen or not sibling.is_valid_at(moment):
-                    continue
                 seen.add(sibling.id)
                 extras.append(sibling)
                 if len(extras) >= extra:

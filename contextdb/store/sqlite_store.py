@@ -821,6 +821,8 @@ class SQLiteStore(BaseStore):
         top_k: int = 10,
         filters: dict[str, object] | None = None,
         user_id: str | None = None,
+        *,
+        copy_items: bool = True,
     ) -> list[MemoryItem]:
         conn = self._require_conn()
         index = await self._ensure_index()

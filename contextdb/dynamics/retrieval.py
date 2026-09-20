@@ -15,7 +15,7 @@ heuristics below get ~80% of the signal for zero cost.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -166,7 +166,10 @@ class RetrievalEngine:
         """RRF-fuse per-graph rankings, then multiply by salience."""
         weights = self.classifier.classify(query)
         seed_items = await self.store.search_by_embedding(
-            query_embedding, top_k=top_k * 2, user_id=user_id
+            query_embedding,
+            top_k=top_k * 2,
+            user_id=user_id,
+            copy_items=False,
         )
         semantic_ranking = [(item.id, 1.0 / (rank + 1)) for rank, item in enumerate(seed_items)]
         rankings: dict[str, list[tuple[str, float]]] = {"semantic": semantic_ranking}
@@ -201,25 +204,34 @@ class RetrievalEngine:
         if not fused:
             # No fusion signal (empty store or zero weights): rank the seeds
             # directly, still applying salience.
-            return [
+            scored = [
                 self._score(
                     item, 1.0 / (rank + 1), per_graph_ranks, now, seed_cosine.get(item.id, 0.0)
                 )
                 for rank, item in enumerate(seed_items[:top_k])
             ]
-
-        scored: list[ScoredMemory] = []
-        for mid, rrf_score in fused:
-            item = seed_by_id.get(mid)
-            if item is None:
-                item = await self.store.get_raw(mid)
-            if item is None:
-                continue
-            scored.append(
-                self._score(item, rrf_score, per_graph_ranks, now, seed_cosine.get(mid, 0.0))
-            )
-        scored.sort(key=lambda s: s.final_score, reverse=True)
-        return scored[:top_k]
+        else:
+            scored = []
+            for mid, rrf_score in fused:
+                item = seed_by_id.get(mid)
+                if item is None:
+                    item = await self.store.get_raw(mid)
+                if item is None:
+                    continue
+                scored.append(
+                    self._score(
+                        item,
+                        rrf_score,
+                        per_graph_ranks,
+                        now,
+                        seed_cosine.get(mid, 0.0),
+                    )
+                )
+            scored.sort(key=lambda s: s.final_score, reverse=True)
+        return [
+            replace(score, item=score.item.model_copy(deep=True))
+            for score in scored[:top_k]
+        ]
 
     def _score(
         self,

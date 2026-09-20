@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -175,6 +176,44 @@ async def test_list_and_count(tmp_store: SQLiteStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_by_entities_applies_composition_filters(
+    tmp_store: SQLiteStore,
+) -> None:
+    now = datetime.now(tz=timezone.utc)
+    first = await tmp_store.add(
+        MemoryItem(
+            content="first",
+            entity_key="customer",
+            attribute_key="first",
+        )
+    )
+    second = await tmp_store.add(
+        MemoryItem(
+            content="second",
+            entity_key="customer",
+            attribute_key="second",
+        )
+    )
+    await tmp_store.add(
+        MemoryItem(
+            content="future",
+            entity_key="customer",
+            attribute_key="future",
+            valid_from=now + timedelta(days=1),
+        )
+    )
+
+    results = await tmp_store.list_by_entities(
+        ["customer"],
+        exclude_ids={first.id},
+        valid_at=now,
+        limit=1,
+    )
+
+    assert [item.id for item in results] == [second.id]
+
+
+@pytest.mark.asyncio
 async def test_search_by_embedding(tmp_store: SQLiteStore) -> None:
     a = await tmp_store.add(MemoryItem(content="a", embedding=[1.0] + [0.0] * 31))
     b = await tmp_store.add(MemoryItem(content="b", embedding=[0.0] + [1.0] + [0.0] * 30))
@@ -249,8 +288,6 @@ async def test_iter_memories_paginates(tmp_store: SQLiteStore) -> None:
 @pytest.mark.asyncio
 async def test_delete_older_than(tmp_store: SQLiteStore) -> None:
     """delete_older_than issues a single SQL delete."""
-    from datetime import datetime, timezone
-
     item = await tmp_store.add(MemoryItem(content="x", embedding=[0.0] * 32))
     future = datetime.now(tz=timezone.utc).replace(year=2099).isoformat()
     removed = await tmp_store.delete_older_than(future, hard=True)

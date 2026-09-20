@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Recall now bounds sibling composition before deep-copying Postgres cache
+  entries and borrows read-only candidate references while ranking. Final
+  results remain detached, and entity priority, temporal validity, user scope,
+  and composition limits are unchanged.
+
 ## 0.4.1 — 2026-08-24
 
 - NOOP audit entries now carry the existing memory ID and canonical slot
