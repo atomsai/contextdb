@@ -98,6 +98,16 @@ async def test_list_by_entities_filters_and_copies_only_the_requested_limit(
         )
         for index in range(20)
     ]
+    foreign = [
+        MemoryItem(
+            content=f"foreign-{index}",
+            entity_key="entity-a",
+            user_id="user-2",
+            tenant_id="tenant-1",
+            agent_id="agent-1",
+        )
+        for index in range(1_000)
+    ]
     future = MemoryItem(
         content="future",
         entity_key="entity-a",
@@ -106,13 +116,15 @@ async def test_list_by_entities_filters_and_copies_only_the_requested_limit(
         agent_id="agent-1",
         valid_from=now + timedelta(days=1),
     )
-    indexed = [*entity_b, future, *entity_a]
+    indexed = [*foreign, *entity_b, future, *entity_a]
     for item in indexed:
         store._cache_index_item(item)
     store._index_loaded = True
 
     original_model_copy = MemoryItem.model_copy
+    original_scope_allows = store._item_scope_allows
     copies = 0
+    scope_checks = 0
 
     def counted_model_copy(
         self: MemoryItem,
@@ -125,6 +137,13 @@ async def test_list_by_entities_filters_and_copies_only_the_requested_limit(
         return original_model_copy(self, update=update, deep=deep)
 
     monkeypatch.setattr(MemoryItem, "model_copy", counted_model_copy)
+
+    def counted_scope_allows(item: MemoryItem, user_id: str | None) -> bool:
+        nonlocal scope_checks
+        scope_checks += 1
+        return original_scope_allows(item, user_id)
+
+    monkeypatch.setattr(store, "_item_scope_allows", counted_scope_allows)
     results = await store.list_by_entities(
         ["entity-a", "entity-b"],
         user_id="user-1",
@@ -135,6 +154,7 @@ async def test_list_by_entities_filters_and_copies_only_the_requested_limit(
 
     assert len(results) == 5
     assert copies == 5
+    assert scope_checks == 7
     assert all(item.entity_key == "entity-a" for item in results)
     assert entity_a[0].id not in {item.id for item in results}
     results[0].metadata["nested"].append(99)
@@ -238,6 +258,12 @@ def test_postgres_secondary_indexes_follow_cache_lifecycle() -> None:
     }
     assert list(store._index_ids_by_entity["entity-a"]) == [first.id]
     assert list(store._index_ids_by_entity["entity-b"]) == [second.id]
+    assert list(store._index_ids_by_user_entity["user-1", "entity-a"]) == [
+        first.id
+    ]
+    assert list(store._index_ids_by_user_entity["user-2", "entity-b"]) == [
+        second.id
+    ]
 
     replacement = first.model_copy(
         update={"user_id": "user-3", "entity_key": "entity-c"}
@@ -245,18 +271,24 @@ def test_postgres_secondary_indexes_follow_cache_lifecycle() -> None:
     store._cache_index_item(replacement)
     assert "user-1" not in store._index_ids_by_user
     assert "entity-a" not in store._index_ids_by_entity
+    assert ("user-1", "entity-a") not in store._index_ids_by_user_entity
     assert store._index_ids_by_user["user-3"] == {first.id}
     assert list(store._index_ids_by_entity["entity-c"]) == [first.id]
+    assert list(store._index_ids_by_user_entity["user-3", "entity-c"]) == [
+        first.id
+    ]
 
     store._discard_index_item(first.id)
     assert "user-3" not in store._index_ids_by_user
     assert "entity-c" not in store._index_ids_by_entity
+    assert ("user-3", "entity-c") not in store._index_ids_by_user_entity
     assert first.id not in store._index_items
 
     store._clear_index_items()
     assert store._index_items == {}
     assert store._index_ids_by_user == {}
     assert store._index_ids_by_entity == {}
+    assert store._index_ids_by_user_entity == {}
 
 
 @pytest.mark.asyncio
