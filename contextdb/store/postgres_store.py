@@ -282,6 +282,10 @@ class PostgresStore(BaseStore):
         self._index_items: dict[str, MemoryItem] = {}
         self._index_ids_by_user: dict[str | None, set[str]] = {}
         self._index_ids_by_entity: dict[str, dict[str, None]] = {}
+        self._index_ids_by_user_entity: dict[
+            tuple[str | None, str],
+            dict[str, None],
+        ] = {}
         self._embedding_dim = embedding_dim
         self._embedding_model_id = embedding_model_id
         self._index_loaded = False
@@ -389,6 +393,10 @@ class PostgresStore(BaseStore):
         self._index_ids_by_user.setdefault(item.user_id, set()).add(item.id)
         if item.entity_key is not None:
             self._index_ids_by_entity.setdefault(item.entity_key, {})[item.id] = None
+            self._index_ids_by_user_entity.setdefault(
+                (item.user_id, item.entity_key),
+                {},
+            )[item.id] = None
 
     def _discard_index_item(self, memory_id: str) -> None:
         item = self._index_items.pop(memory_id, None)
@@ -405,11 +413,22 @@ class PostgresStore(BaseStore):
                 entity_ids.pop(memory_id, None)
                 if not entity_ids:
                     self._index_ids_by_entity.pop(item.entity_key, None)
+            scoped_entity_ids = self._index_ids_by_user_entity.get(
+                (item.user_id, item.entity_key)
+            )
+            if scoped_entity_ids is not None:
+                scoped_entity_ids.pop(memory_id, None)
+                if not scoped_entity_ids:
+                    self._index_ids_by_user_entity.pop(
+                        (item.user_id, item.entity_key),
+                        None,
+                    )
 
     def _clear_index_items(self) -> None:
         self._index_items.clear()
         self._index_ids_by_user.clear()
         self._index_ids_by_entity.clear()
+        self._index_ids_by_user_entity.clear()
 
     def _scope_sql(self, user_id: str | None = None) -> tuple[str, list[Any]]:
         clauses: list[str] = []
@@ -1101,8 +1120,17 @@ class PostgresStore(BaseStore):
             await self._ensure_index()
         excluded = exclude_ids or set()
         items: list[MemoryItem] = []
+        scope = self._resolve_scope(user_id)
         for entity_key in dict.fromkeys(entity_keys):
-            for memory_id in self._index_ids_by_entity.get(entity_key, {}):
+            entity_ids = (
+                self._index_ids_by_entity.get(entity_key, {})
+                if scope is None
+                else self._index_ids_by_user_entity.get(
+                    (scope, entity_key),
+                    {},
+                )
+            )
+            for memory_id in entity_ids:
                 item = self._index_items.get(memory_id)
                 if item is None:
                     continue

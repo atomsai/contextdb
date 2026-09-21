@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.4.4 — 2026-09-20
+
+- PostgreSQL sibling composition now uses an ordered user-plus-entity cache
+  index, so a scoped recall does not scan other users that share the same
+  entity key.
+
 ## 0.4.3 — 2026-09-20
 
 - High-cardinality Postgres recall now indexes cached IDs by user and entity,
