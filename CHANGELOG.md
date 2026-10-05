@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.4.5 — 2026-10-05
+
+- `forget_user` no longer deletes other users' memories. It added every graph
+  neighbor of the erased memories to the deletion set, and entity edges join
+  any memories that mention the same name, so on a shared client with the
+  entity graph and an extraction model, erasing one user could hard-delete
+  another user's memories. It now deletes only the user's memories and the
+  summaries derived from them, and severs their graph edges.
+- Consolidated summaries keep the weakest corroboration count of their inputs
+  instead of the sum. Repeated copies of one third-party claim could
+  consolidate into a summary that passed the default trust bar and was
+  returned by `recall_for_action`. The summary now stays pending confirmation.
+- Unchanged limitation: entity rows are shared across users, and attributes
+  merged into an entity from a user's text are not removed by `forget_user`.
+
 ## 0.4.4 — 2026-09-20
 
 - PostgreSQL sibling composition now uses an ordered user-plus-entity cache

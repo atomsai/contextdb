@@ -22,9 +22,34 @@ async def test_consolidation_merges_with_worst_case_trust(client: ContextDB) -> 
     assert summary.source == "consolidator"
     assert summary.epistemic_source == "third_party"
     assert summary.confidence == 0.4
-    assert summary.corroboration_count == 6
+    assert summary.corroboration_count == 1
     assert summary.action_relevant is True
     assert summary.metadata["consolidated_from"]
+    assert client.trust_policy.is_trusted(summary) is False
+
+
+async def test_consolidated_copies_of_one_rumor_still_require_confirmation(
+    client: ContextDB,
+) -> None:
+    """Five copies of one third-party rumor are one source, not five. The
+    summary must stay pending confirmation instead of passing the trust bar."""
+    copies = [
+        await client.factual.add(
+            "Forum post says the refund for the annual plan was approved.",
+            source="third_party",
+            action_relevant=True,
+        )
+        for _ in range(5)
+    ]
+    assert all(copy.requires_confirmation_under(client.trust_policy) for copy in copies)
+
+    summaries = await client.consolidate(min_cluster_size=5)
+
+    assert summaries, "identical copies should have merged"
+    summary = summaries[0]
+    assert summary.independent_corroboration == 1
+    assert summary.requires_confirmation_under(client.trust_policy)
+    assert await client.factual.recall_for_action("issue the annual plan refund") == []
 
 
 async def test_consolidation_screens_summary_for_injection(client: ContextDB) -> None:
