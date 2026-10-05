@@ -41,7 +41,7 @@ from contextdb.core.policy import TrustPolicy
 from contextdb.pool import ContextDBPool
 from contextdb.utils.embeddings import EmbeddingProvider
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 __all__ = [
     "Clock",

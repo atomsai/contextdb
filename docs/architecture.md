@@ -41,7 +41,8 @@ Three pipelines operate over the storage layer:
    NOOP operations with lineage and consistency results. Separately, the
    auto-linker mirrors each new write into graph indices; the consolidator
    merges dense semantic clusters into summaries that inherit *worst-case*
-   trust (no laundering); the pruner drops stale / redundant memories by
+   trust, including the weakest corroboration count (no laundering); the
+   pruner drops stale / redundant memories by
    policy.
 3. **Retrieval** — a query becomes an answer. The query is PII-redacted
    before embed. Query classifier picks graph weights; each graph produces
@@ -78,7 +79,9 @@ search, `DECIDE` (act/ask/abstain), and deletion — and because the chain
 is append-only, only the PII-processed form of a query is ever logged.
 `pii_action="encrypt"` fails closed: without a key the client refuses to
 initialize rather than store plaintext annotation originals.
-`forget_user` walks graph edges and signs the deletion set. The retention
+`forget_user` deletes the user's memories and the summaries derived from them,
+severs their graph edges, and signs the deletion set. It never deletes another
+user's memory through a shared edge. The retention
 manager applies typed TTLs and honors right-to-erasure requests. Isolation
 is a store predicate (`user_id` / `tenant_id` / `agent_id`), not a
 convention.

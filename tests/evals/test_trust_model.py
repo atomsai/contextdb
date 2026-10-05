@@ -813,6 +813,42 @@ async def test_eval_7_1_forget_user_leaves_zero_residue(tmp_path: Path) -> None:
         await db.close()
 
 
+async def test_eval_7_2_forget_user_spares_other_users_sharing_an_entity(
+    tmp_path: Path,
+) -> None:
+    """EVAL-7.2: on a shared client, erasing one user must not delete another
+    user's memory because both mention the same entity."""
+    db = contextdb.init(
+        tenant_id="org-shared",
+        config=make_config(tmp_path, enable_entity_graph=True),
+    )
+    db._llm = MockLLM(
+        responses={"Extract": '{"entities": [{"name": "Acme", "type": "ORGANIZATION"}]}'}
+    )
+    try:
+        mine = await db.factual.add(
+            "Prefers Friday calls about the Acme account.",
+            source="user_stated",
+            user_id="alice",
+        )
+        theirs = await db.factual.add(
+            "Escalation contact for the Acme renewal.",
+            source="user_stated",
+            user_id="bob",
+        )
+        graph = db._graphs["entity"]
+        assert [nid for nid, _ in await graph.get_neighbors(mine.id)] == [theirs.id]
+
+        deleted = await db.forget_user("alice")
+
+        assert deleted == 1
+        assert await db.verify_forgotten("alice") is True
+        assert [m.id for m in await db.factual.list_facts(user_id="bob")] == [theirs.id]
+        assert await graph.get_neighbors(theirs.id) == []
+    finally:
+        await db.close()
+
+
 # ---------------------------------------------------------------------------
 # Epic 8 — Realtime + agent-host integrations
 # ---------------------------------------------------------------------------

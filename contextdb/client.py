@@ -1685,21 +1685,13 @@ class ContextDB:
             if added == 0:
                 break
 
-        # Walk graph edges: a forgotten fact that still has neighbors is
-        # how "forgotten" memories regenerate — not from the row, from
-        # the graph.
+        # Sever graph edges so a forgotten memory cannot be reached or
+        # rebuilt through the graph. Neighbors are never added to the
+        # deletion set: entity edges join every memory that mentions the
+        # same name, including other users' memories, and this user's own
+        # and derived memories are already in ``targets``.
         for graph in self._graphs.values():
             for memory_id in list(targets):
-                try:
-                    neighbors = await graph.get_neighbors(memory_id, max_results=50)
-                except Exception:  # noqa: BLE001
-                    continue
-                for nid, _weight in neighbors:
-                    if nid in targets:
-                        continue
-                    neighbor = await store.get_raw(nid)
-                    if neighbor is not None:
-                        targets[nid] = neighbor
                 try:
                     await graph.remove_node(memory_id)
                 except Exception:  # noqa: BLE001
