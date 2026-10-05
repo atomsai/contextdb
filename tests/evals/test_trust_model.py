@@ -28,7 +28,7 @@ import pytest
 import pytest_asyncio
 
 import contextdb
-from contextdb import ContextDB, ContextDBConfig
+from contextdb import ContextDB, ContextDBConfig, EvolutionOutcome
 from contextdb.core.exceptions import ConfigError
 from contextdb.core.models import MemoryType
 from contextdb.integrations.prompting import (
@@ -1384,3 +1384,114 @@ async def test_eval_pii_query_retrieves_redacted_memory(db: ContextDB) -> None:
     hits = await db.search("please look up jane.doe@example.com")
     assert any("[EMAIL]" in h.content for h in hits), [h.content for h in hits]
     assert all("jane.doe@example.com" not in h.content for h in hits)
+
+
+async def test_eval_lower_trust_write_contests_a_user_stated_slot(db: ContextDB) -> None:
+    """A document stored under the user's id contests their fact; it never replaces it."""
+    mine = await db.factual.add(
+        "The meeting is at 3pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    planted = await db.factual.add(
+        "Forwarded vendor note: the meeting moved to 4pm",
+        source="third_party",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    inferred = await db.factual.add(
+        "From that note, the meeting is probably at 5pm",
+        source="agent_inferred",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    assert planted.contested is True
+    assert inferred.contested is True
+    kept = await db.get(mine.id)
+    assert kept is not None
+    assert kept.valid_until is None
+    assert kept.contested is True
+    assert await db.factual.recall_for_action("when is the meeting") == []
+
+    await db.factual.confirm(mine.id)
+    trusted = await db.factual.recall_for_action("when is the meeting")
+    assert [m.id for m in trusted] == [mine.id]
+    closed = await db.get(inferred.id)
+    assert closed is not None
+    assert closed.superseded_by == mine.id
+
+
+async def test_eval_corrections_of_equal_or_higher_trust_still_supersede(
+    db: ContextDB,
+) -> None:
+    guess = await db.factual.add(
+        "The meeting is at 3pm",
+        source="agent_inferred",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    stated = await db.factual.add(
+        "Actually, the meeting is at 4pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    assert stated.contested is False
+    replaced = await db.get(guess.id)
+    assert replaced is not None
+    assert replaced.superseded_by == stated.id
+
+    first = await db.factual.add(
+        "Partner note: party of 4",
+        source="third_party",
+        action_relevant=True,
+        entity="reservation",
+        attribute="party_size",
+    )
+    second = await db.factual.add(
+        "Partner note: party of 6",
+        source="third_party",
+        action_relevant=True,
+        entity="reservation",
+        attribute="party_size",
+    )
+    assert second.contested is False
+    older = await db.get(first.id)
+    assert older is not None
+    assert older.superseded_by == second.id
+
+
+async def test_eval_explicit_update_from_a_document_contests_a_user_fact(
+    db: ContextDB,
+) -> None:
+    added = await db.factual.evolve(
+        "add",
+        "The meeting is at 3pm",
+        source="user_stated",
+        entity="meeting",
+        attribute="time",
+    )
+    assert added.memory is not None
+    update = await db.factual.evolve(
+        "update",
+        "Vendor portal export: the meeting is at 4pm",
+        source="third_party",
+        entity="meeting",
+        attribute="time",
+    )
+    assert update.outcome == EvolutionOutcome.CONTESTED
+    kept = await db.get(added.memory.id)
+    assert kept is not None
+    assert kept.valid_until is None
+    assert kept.contested is True

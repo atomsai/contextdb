@@ -137,6 +137,21 @@ def speaker_id(
     return "anonymous"
 
 
+def _first_party(item: MemoryItem) -> bool:
+    return item.confirmed or item.epistemic_source == "user_stated"
+
+
+def outranks(current: MemoryItem, incoming: MemoryItem) -> bool:
+    """Whether ``incoming`` may not replace ``current`` in a slot.
+
+    Speaker identity alone cannot tell a user's correction from a document
+    the agent stored on the user's behalf: both arrive under the same user.
+    A first-party or confirmed fact is therefore never superseded by a
+    lower-trust write; the slot is contested instead.
+    """
+    return _first_party(current) and not _first_party(incoming)
+
+
 class TrustEngine:
     """Slot-aware write path used by ``factual.add`` and consolidation."""
 
@@ -252,20 +267,27 @@ class TrustEngine:
             )
             return updated, "corroborated"
 
+        protected = [c for c in current if outranks(c, item)]
         same_speaker = [
-            c for c in current if incoming_speaker in (c.corroborated_by or [])
+            c
+            for c in current
+            if c not in protected and incoming_speaker in (c.corroborated_by or [])
         ]
         other_speaker = [
-            c for c in current if incoming_speaker not in (c.corroborated_by or [])
+            c
+            for c in current
+            if c not in protected and incoming_speaker not in (c.corroborated_by or [])
         ]
 
         item.write_generation = max_gen + 1
         # Independent speakers asserting different values: contest, do not
-        # last-write-win. Same-speaker corrections still supersede.
-        if other_speaker and not same_speaker and not item.pending_consolidation:
+        # last-write-win. Same-speaker corrections still supersede, except a
+        # lower-trust write never replaces a first-party fact.
+        contest = protected + ([] if same_speaker else other_speaker)
+        if contest and not item.pending_consolidation:
             item.contested = True
             stored = await self.store.add(item)
-            for candidate in other_speaker:
+            for candidate in contest:
                 await self.store.update(candidate.id, contested=True)
                 await self._log(
                     "CONFLICT",
@@ -278,8 +300,13 @@ class TrustEngine:
                         "old_value": candidate.content,
                         "new_value": stored.content,
                         "speaker": incoming_speaker,
+                        "reason": (
+                            "outranked_source" if candidate in protected else "other_speaker"
+                        ),
                     },
                 )
+            for candidate in [c for c in current if c not in contest]:
+                await self._supersede(candidate, stored, user_id, item, now)
             await self._log(
                 "CREATE",
                 stored.id,
@@ -297,25 +324,9 @@ class TrustEngine:
         for candidate in current:
             if item.pending_consolidation and not candidate.pending_consolidation:
                 continue
-            await self.store.update(
-                candidate.id,
-                valid_until=now,
-                superseded_by=stored.id,
-                contested=False,
-            )
-            await self._log(
-                "SUPERSEDE",
-                candidate.id,
-                user_id,
-                {
-                    "superseded_by": stored.id,
-                    "entity": item.entity_key,
-                    "attribute": item.attribute_key,
-                    "old_value": candidate.content,
-                    "new_value": stored.content,
-                    "generation": item.write_generation,
-                },
-            )
+            if candidate in protected:
+                continue
+            await self._supersede(candidate, stored, user_id, item, now)
             outcome = "superseded"
         await self._log(
             "CREATE",
@@ -324,6 +335,34 @@ class TrustEngine:
             {"trust": outcome, "entity": item.entity_key, "attribute": item.attribute_key},
         )
         return stored, outcome
+
+    async def _supersede(
+        self,
+        candidate: MemoryItem,
+        stored: MemoryItem,
+        user_id: str | None,
+        item: MemoryItem,
+        now: datetime,
+    ) -> None:
+        await self.store.update(
+            candidate.id,
+            valid_until=now,
+            superseded_by=stored.id,
+            contested=False,
+        )
+        await self._log(
+            "SUPERSEDE",
+            candidate.id,
+            user_id,
+            {
+                "superseded_by": stored.id,
+                "entity": item.entity_key,
+                "attribute": item.attribute_key,
+                "old_value": candidate.content,
+                "new_value": stored.content,
+                "generation": item.write_generation,
+            },
+        )
 
     async def evolve_write(
         self,
@@ -591,22 +630,24 @@ class TrustEngine:
                 previous_memory_ids=previous_ids,
             )
 
+        protected = [candidate for candidate in current if outranks(candidate, item)]
         same_speaker = [
             candidate
             for candidate in current
-            if incoming_speaker in candidate.corroborated_by
+            if candidate not in protected and incoming_speaker in candidate.corroborated_by
         ]
         other_speaker = [
             candidate
             for candidate in current
-            if incoming_speaker not in candidate.corroborated_by
+            if candidate not in protected and incoming_speaker not in candidate.corroborated_by
         ]
         item.write_generation = max_generation + 1
 
-        if other_speaker and not same_speaker:
+        contest = protected + ([] if same_speaker else other_speaker)
+        if contest:
             item.contested = True
             stored = await self.store.add(item)
-            for candidate in other_speaker:
+            for candidate in contest:
                 await self.store.update(candidate.id, contested=True)
                 await self._log(
                     "CONFLICT",
@@ -619,8 +660,13 @@ class TrustEngine:
                         "old_value": candidate.content,
                         "new_value": stored.content,
                         "speaker": incoming_speaker,
+                        "reason": (
+                            "outranked_source" if candidate in protected else "other_speaker"
+                        ),
                     },
                 )
+            for candidate in [c for c in current if c not in contest]:
+                await self._supersede(candidate, stored, user_id, item, now)
             await self._log(
                 "CREATE",
                 stored.id,

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A lower-trust write no longer replaces a first-party fact in its slot.
+  Writes made under one user id share a speaker, so a third-party document or
+  an agent inference stored for that user superseded what the user had said,
+  and the user would then be asked to confirm the document's value. A
+  user-stated or confirmed fact now stays current and the slot is contested
+  until `confirm()`. Corrections of equal or higher trust still supersede.
+
 ## 0.4.5 — 2026-10-05
 
 - `forget_user` no longer deletes other users' memories. It added every graph
