@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The slot vocabulary (version 2) adds `user/billing_email`, `user/work_phone`,
+  and `user/work_address`. A user's billing email, work phone, or work address
+  no longer replaces their personal one. An email filed as a billing email
+  stays there instead of being moved to `user/email` and stored as
+  `agent_inferred`.
+
 - `factual.recall_for_action` and `factual.pending_confirmations` accept the
   `entity` and `attribute` an action needs. With them, only current facts in
   that slot count, read exactly rather than by similarity, and the read is

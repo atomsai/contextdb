@@ -1541,3 +1541,50 @@ async def test_eval_slot_scoped_action_relies_only_on_that_slot(db: ContextDB) -
     assert await db.factual.pending_confirmations(entity="user", attribute="email") == []
     with pytest.raises(ValueError):
         await db.factual.recall_for_action("Email me the receipt", entity="user")
+
+
+async def test_eval_billing_and_personal_email_are_separate_slots(db: ContextDB) -> None:
+    """Storing where invoices go must not erase the user's own email, or the reverse."""
+    personal = await db.factual.add(
+        "My email is avery.example@example.com",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="email",
+    )
+    billing = await db.factual.add(
+        "Send invoices to billing.example@example.com",
+        source="user_stated",
+        action_relevant=True,
+        entity="customer",
+        attribute="invoice_email",
+    )
+    assert billing.epistemic_source == "user_stated"
+    assert (billing.entity_key, billing.attribute_key, billing.slot_class) == (
+        "user",
+        "billing_email",
+        "contact",
+    )
+    kept = await db.get(personal.id)
+    assert kept is not None
+    assert kept.valid_until is None
+    trusted = {m.id for m in await db.factual.recall_for_action("send the invoice")}
+    assert {personal.id, billing.id} <= trusted
+
+    phone = await db.factual.add(
+        "Call my desk line at +1 555 0100",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="office_phone",
+    )
+    assert (phone.attribute_key, phone.slot_class) == ("work_phone", "contact")
+
+    mislabelled = await db.factual.add(
+        "My account number is 12345678",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="billing_email",
+    )
+    assert mislabelled.epistemic_source == "agent_inferred"

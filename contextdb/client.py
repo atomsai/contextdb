@@ -48,7 +48,12 @@ from contextdb.core.models import (
     MemoryType,
 )
 from contextdb.core.policy import TrustPolicy
-from contextdb.core.slots import canonicalize_slot, infer_negation, infer_slot
+from contextdb.core.slots import (
+    canonicalize_slot,
+    infer_negation,
+    infer_slot,
+    slot_supported_by,
+)
 from contextdb.dynamics.trust import TrustEngine, infer_action_relevant, speaker_id
 from contextdb.privacy.injection import screen_injection
 from contextdb.privacy.pii_detector import PIIDetector
@@ -389,7 +394,7 @@ class ContextDB:
         inferred = infer_slot(source_text)
         chosen = explicit or inferred
         if explicit is not None and inferred is not None:
-            if (explicit.entity, explicit.attribute) != (inferred.entity, inferred.attribute):
+            if not slot_supported_by(explicit, inferred):
                 chosen = inferred
                 item.epistemic_source = "agent_inferred"
                 item.confidence = min(item.confidence, 0.4)
