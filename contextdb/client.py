@@ -1991,8 +1991,18 @@ class ContextDB:
         self,
         user_id: str | None = None,
         limit: int = 100,
+        *,
+        entity: str | None = None,
+        attribute: str | None = None,
     ) -> list[MemoryItem]:
-        """Facts that are action-relevant and do not yet pass the trust policy."""
+        """Facts that are action-relevant and do not yet pass the trust policy.
+
+        With ``entity`` and ``attribute``, only the current facts in that slot.
+        """
+        if entity is not None or attribute is not None:
+            rows = await self.slot_facts(entity, attribute, user_id=user_id)
+            pending = [item for item in rows if self.trust_policy.requires_confirmation(item)]
+            return pending[:limit]
         uid = self._resolve_user(user_id)
         await self._ensure_init()
         store = self._require_store()
@@ -2000,6 +2010,45 @@ class ContextDB:
             user_id=uid, memory_type=MemoryType.FACTUAL, limit=limit
         )
         return [item for item in rows if self.trust_policy.requires_confirmation(item)]
+
+    async def slot_facts(
+        self,
+        entity: str | None,
+        attribute: str | None,
+        *,
+        user_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> list[MemoryItem]:
+        """Current facts in one slot, read exactly rather than by similarity.
+
+        A similarity search returns the nearest memories whether or not they
+        answer the request. When the caller knows which slot an action needs,
+        this is the evidence that action may rely on.
+        """
+        slot = canonicalize_slot(entity, attribute)
+        if slot is None:
+            raise ValueError("entity and attribute are both required to name a slot")
+        uid = self._resolve_user(user_id)
+        await self._ensure_init()
+        store = self._require_store()
+        moment = as_of or self.clock()
+        rows = await store.list_by_slot(slot.entity, slot.attribute, user_id=uid)
+        items = sorted(
+            (m for m in rows if m.memory_type == MemoryType.FACTUAL and m.is_valid_at(moment)),
+            key=lambda m: m.write_generation,
+            reverse=True,
+        )
+        audit_details = {
+            "slot": [slot.entity, slot.attribute],
+            "hits": len(items),
+            "returned_ids": [m.id for m in items],
+            "as_of": moment.isoformat(),
+            "abstained": not items,
+        }
+        if self._audit is not None and self.config.enable_read_audit:
+            await self._audit.log(operation="SLOT_READ", user_id=uid, details=audit_details)
+        await self._emit("read_audit", user_id=uid, audit_details=audit_details)
+        return items
 
     # ------------------------------------------------------------------ #
     # Typed memory surfaces

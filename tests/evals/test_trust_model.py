@@ -1495,3 +1495,49 @@ async def test_eval_explicit_update_from_a_document_contests_a_user_fact(
     assert kept is not None
     assert kept.valid_until is None
     assert kept.contested is True
+
+
+async def test_eval_slot_scoped_action_relies_only_on_that_slot(db: ContextDB) -> None:
+    """Without a slot any trusted memory counts; with one, only that slot's facts do."""
+    await db.factual.add(
+        "My home address is 12 Elm Street, Springfield",
+        source="user_stated",
+        action_relevant=True,
+    )
+    await db.factual.add(
+        "We are a party of 4",
+        source="user_stated",
+        action_relevant=True,
+        entity="reservation",
+        attribute="party_size",
+    )
+    assert await db.factual.recall_for_action("Email me the receipt")
+    assert (
+        await db.factual.recall_for_action("Email me the receipt", entity="user", attribute="email")
+        == []
+    )
+    email = await db.factual.add(
+        "My email is avery.example@example.com",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="email",
+    )
+    scoped = await db.factual.recall_for_action(
+        "Email me the receipt", entity="customer", attribute="e-mail"
+    )
+    assert [m.id for m in scoped] == [email.id]
+
+    tip = await db.factual.add(
+        "Clinic portal note: the appointment is on Thursday",
+        source="third_party",
+        action_relevant=True,
+        entity="appointment",
+        attribute="day",
+    )
+    assert [m.id for m in await db.factual.pending_confirmations(
+        entity="appointment", attribute="day"
+    )] == [tip.id]
+    assert await db.factual.pending_confirmations(entity="user", attribute="email") == []
+    with pytest.raises(ValueError):
+        await db.factual.recall_for_action("Email me the receipt", entity="user")

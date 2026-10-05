@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `factual.recall_for_action` and `factual.pending_confirmations` accept the
+  `entity` and `attribute` an action needs. With them, only current facts in
+  that slot count, read exactly rather than by similarity, and the read is
+  audited like a recall. Without them nothing changes: any trusted memory the
+  query retrieves counts, whether or not it answers the request.
+
 - A lower-trust write no longer replaces a first-party fact in its slot.
   Writes made under one user id share a speaker, so a third-party document or
   an agent inference stored for that user superseded what the user had said,

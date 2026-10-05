@@ -166,12 +166,24 @@ class FactualMemory:
         as_of: datetime | None = None,
         *,
         user_id: str | None = None,
+        entity: str | None = None,
+        attribute: str | None = None,
     ) -> list[MemoryItem]:
-        """Recall only facts an agent may act on without confirming first."""
+        """Recall only facts an agent may act on without confirming first.
+
+        Without a slot, any trusted memory the query retrieves counts, related
+        or not. Pass the ``entity`` and ``attribute`` the action needs to rely
+        only on trusted facts in that slot.
+        """
         policy = self.client.trust_policy
-        candidates = await self.recall(
-            query, top_k=top_k * 4, as_of=as_of, user_id=self._user(user_id)
-        )
+        if entity is not None or attribute is not None:
+            candidates = await self.client.slot_facts(
+                entity, attribute, user_id=self._user(user_id), as_of=as_of
+            )
+        else:
+            candidates = await self.recall(
+                query, top_k=top_k * 4, as_of=as_of, user_id=self._user(user_id)
+            )
         return [m for m in candidates if policy.is_trusted(m)][:top_k]
 
     async def confirm(self, memory_id: str, user_id: str | None = None) -> MemoryItem:
@@ -182,10 +194,13 @@ class FactualMemory:
         self,
         user_id: str | None = None,
         limit: int = 100,
+        *,
+        entity: str | None = None,
+        attribute: str | None = None,
     ) -> list[MemoryItem]:
         """Action-relevant facts that still need a yes from the user."""
         return await self.client.pending_confirmations(
-            user_id=self._user(user_id), limit=limit
+            user_id=self._user(user_id), limit=limit, entity=entity, attribute=attribute
         )
 
     async def update_fact(
