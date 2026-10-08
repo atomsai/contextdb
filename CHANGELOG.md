@@ -2,17 +2,7 @@
 
 ## Unreleased
 
-- The slot vocabulary (version 2) adds `user/billing_email`, `user/work_phone`,
-  and `user/work_address`. A user's billing email, work phone, or work address
-  no longer replaces their personal one. An email filed as a billing email
-  stays there instead of being moved to `user/email` and stored as
-  `agent_inferred`.
-
-- `factual.recall_for_action` and `factual.pending_confirmations` accept the
-  `entity` and `attribute` an action needs. With them, only current facts in
-  that slot count, read exactly rather than by similarity, and the read is
-  audited like a recall. Without them nothing changes: any trusted memory the
-  query retrieves counts, whether or not it answers the request.
+## 0.4.6 — 2026-10-08
 
 - A lower-trust write no longer replaces a first-party fact in its slot.
   Writes made under one user id share a speaker, so a third-party document or
@@ -20,6 +10,17 @@
   and the user would then be asked to confirm the document's value. A
   user-stated or confirmed fact now stays current and the slot is contested
   until `confirm()`. Corrections of equal or higher trust still supersede.
+  Advisory: GHSA-vpf9-5xgr-3x8m.
+- `factual.recall_for_action` and `factual.pending_confirmations` accept the
+  `entity` and `attribute` an action needs. With them, only current facts in
+  that slot count, read exactly rather than by similarity, and the read is
+  audited like a recall. Without them nothing changes: any trusted memory the
+  query retrieves counts, whether or not it answers the request.
+- The slot vocabulary (version 2) adds `user/billing_email`, `user/work_phone`,
+  and `user/work_address`. A user's billing email, work phone, or work address
+  no longer replaces their personal one. An email filed as a billing email
+  stays there instead of being moved to `user/email` and stored as
+  `agent_inferred`.
 
 ## 0.4.5 — 2026-10-05
 
