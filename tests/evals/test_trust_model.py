@@ -28,7 +28,7 @@ import pytest
 import pytest_asyncio
 
 import contextdb
-from contextdb import ContextDB, ContextDBConfig
+from contextdb import ContextDB, ContextDBConfig, EvolutionOutcome
 from contextdb.core.exceptions import ConfigError
 from contextdb.core.models import MemoryType
 from contextdb.integrations.prompting import (
@@ -1384,3 +1384,207 @@ async def test_eval_pii_query_retrieves_redacted_memory(db: ContextDB) -> None:
     hits = await db.search("please look up jane.doe@example.com")
     assert any("[EMAIL]" in h.content for h in hits), [h.content for h in hits]
     assert all("jane.doe@example.com" not in h.content for h in hits)
+
+
+async def test_eval_lower_trust_write_contests_a_user_stated_slot(db: ContextDB) -> None:
+    """A document stored under the user's id contests their fact; it never replaces it."""
+    mine = await db.factual.add(
+        "The meeting is at 3pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    planted = await db.factual.add(
+        "Forwarded vendor note: the meeting moved to 4pm",
+        source="third_party",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    inferred = await db.factual.add(
+        "From that note, the meeting is probably at 5pm",
+        source="agent_inferred",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    assert planted.contested is True
+    assert inferred.contested is True
+    kept = await db.get(mine.id)
+    assert kept is not None
+    assert kept.valid_until is None
+    assert kept.contested is True
+    assert await db.factual.recall_for_action("when is the meeting") == []
+
+    await db.factual.confirm(mine.id)
+    trusted = await db.factual.recall_for_action("when is the meeting")
+    assert [m.id for m in trusted] == [mine.id]
+    closed = await db.get(inferred.id)
+    assert closed is not None
+    assert closed.superseded_by == mine.id
+
+
+async def test_eval_corrections_of_equal_or_higher_trust_still_supersede(
+    db: ContextDB,
+) -> None:
+    guess = await db.factual.add(
+        "The meeting is at 3pm",
+        source="agent_inferred",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    stated = await db.factual.add(
+        "Actually, the meeting is at 4pm",
+        source="user_stated",
+        confidence=0.9,
+        action_relevant=True,
+        entity="meeting",
+        attribute="time",
+    )
+    assert stated.contested is False
+    replaced = await db.get(guess.id)
+    assert replaced is not None
+    assert replaced.superseded_by == stated.id
+
+    first = await db.factual.add(
+        "Partner note: party of 4",
+        source="third_party",
+        action_relevant=True,
+        entity="reservation",
+        attribute="party_size",
+    )
+    second = await db.factual.add(
+        "Partner note: party of 6",
+        source="third_party",
+        action_relevant=True,
+        entity="reservation",
+        attribute="party_size",
+    )
+    assert second.contested is False
+    older = await db.get(first.id)
+    assert older is not None
+    assert older.superseded_by == second.id
+
+
+async def test_eval_explicit_update_from_a_document_contests_a_user_fact(
+    db: ContextDB,
+) -> None:
+    added = await db.factual.evolve(
+        "add",
+        "The meeting is at 3pm",
+        source="user_stated",
+        entity="meeting",
+        attribute="time",
+    )
+    assert added.memory is not None
+    update = await db.factual.evolve(
+        "update",
+        "Vendor portal export: the meeting is at 4pm",
+        source="third_party",
+        entity="meeting",
+        attribute="time",
+    )
+    assert update.outcome == EvolutionOutcome.CONTESTED
+    kept = await db.get(added.memory.id)
+    assert kept is not None
+    assert kept.valid_until is None
+    assert kept.contested is True
+
+
+async def test_eval_slot_scoped_action_relies_only_on_that_slot(db: ContextDB) -> None:
+    """Without a slot any trusted memory counts; with one, only that slot's facts do."""
+    await db.factual.add(
+        "My home address is 12 Elm Street, Springfield",
+        source="user_stated",
+        action_relevant=True,
+    )
+    await db.factual.add(
+        "We are a party of 4",
+        source="user_stated",
+        action_relevant=True,
+        entity="reservation",
+        attribute="party_size",
+    )
+    assert await db.factual.recall_for_action("Email me the receipt")
+    assert (
+        await db.factual.recall_for_action("Email me the receipt", entity="user", attribute="email")
+        == []
+    )
+    email = await db.factual.add(
+        "My email is avery.example@example.com",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="email",
+    )
+    scoped = await db.factual.recall_for_action(
+        "Email me the receipt", entity="customer", attribute="e-mail"
+    )
+    assert [m.id for m in scoped] == [email.id]
+
+    tip = await db.factual.add(
+        "Clinic portal note: the appointment is on Thursday",
+        source="third_party",
+        action_relevant=True,
+        entity="appointment",
+        attribute="day",
+    )
+    assert [m.id for m in await db.factual.pending_confirmations(
+        entity="appointment", attribute="day"
+    )] == [tip.id]
+    assert await db.factual.pending_confirmations(entity="user", attribute="email") == []
+    with pytest.raises(ValueError):
+        await db.factual.recall_for_action("Email me the receipt", entity="user")
+
+
+async def test_eval_billing_and_personal_email_are_separate_slots(db: ContextDB) -> None:
+    """Storing where invoices go must not erase the user's own email, or the reverse."""
+    personal = await db.factual.add(
+        "My email is avery.example@example.com",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="email",
+    )
+    billing = await db.factual.add(
+        "Send invoices to billing.example@example.com",
+        source="user_stated",
+        action_relevant=True,
+        entity="customer",
+        attribute="invoice_email",
+    )
+    assert billing.epistemic_source == "user_stated"
+    assert (billing.entity_key, billing.attribute_key, billing.slot_class) == (
+        "user",
+        "billing_email",
+        "contact",
+    )
+    kept = await db.get(personal.id)
+    assert kept is not None
+    assert kept.valid_until is None
+    trusted = {m.id for m in await db.factual.recall_for_action("send the invoice")}
+    assert {personal.id, billing.id} <= trusted
+
+    phone = await db.factual.add(
+        "Call my desk line at +1 555 0100",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="office_phone",
+    )
+    assert (phone.attribute_key, phone.slot_class) == ("work_phone", "contact")
+
+    mislabelled = await db.factual.add(
+        "My account number is 12345678",
+        source="user_stated",
+        action_relevant=True,
+        entity="user",
+        attribute="billing_email",
+    )
+    assert mislabelled.epistemic_source == "agent_inferred"

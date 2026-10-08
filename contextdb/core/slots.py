@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-SLOT_VOCAB_VERSION = "1"
+SLOT_VOCAB_VERSION = "2"
 
 # Canonical (entity, attribute) → class. The class drives the per-class
 # corroboration bar in :class:`TrustPolicy`.
@@ -31,8 +31,11 @@ SLOT_VOCAB: dict[tuple[str, str], str] = {
     ("reservation", "time"): "booking",
     ("reservation", "day"): "booking",
     ("user", "email"): "contact",
+    ("user", "billing_email"): "contact",
     ("user", "phone"): "contact",
+    ("user", "work_phone"): "contact",
     ("user", "address"): "contact",
+    ("user", "work_address"): "contact",
     ("user", "name"): "identity",
     ("account", "number"): "identity",
     ("account", "pin"): "identity",
@@ -77,6 +80,15 @@ _ATTRIBUTE_ALIASES: dict[str, str] = {
     "mobile": "phone",
     "allergies": "allergy",
     "allergic": "allergy",
+    "invoice_email": "billing_email",
+    "office_phone": "work_phone",
+    "office_address": "work_address",
+}
+
+# Slots the text slotter cannot tell from a broader one: any email address
+# reads as user/email, whether it is personal or where invoices go.
+_REFINES: dict[tuple[str, str], tuple[str, str]] = {
+    ("user", "billing_email"): ("user", "email"),
 }
 
 
@@ -109,6 +121,13 @@ def canonicalize_slot(entity: str | None, attribute: str | None) -> Slot | None:
         return None
     slot_class = SLOT_VOCAB.get((ent, attr))
     return Slot(entity=ent, attribute=attr, slot_class=slot_class)
+
+
+def slot_supported_by(explicit: Slot, inferred: Slot) -> bool:
+    """Whether the slot the text implies is consistent with the one chosen."""
+    chosen = (explicit.entity, explicit.attribute)
+    implied = (inferred.entity, inferred.attribute)
+    return chosen == implied or _REFINES.get(chosen) == implied
 
 
 _WEEKDAYS = (
