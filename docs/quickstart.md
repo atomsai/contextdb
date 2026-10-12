@@ -84,7 +84,9 @@ Realtime hosts should write with `db.factual.add_fast(...)` (no LLM on the
 turn path) and gate actions with
 `VerifyBeforeAct(db).decide(query)` — `act` / `ask` / `abstain`.
 
-The fabrication bake-off is the public ruler:
+The fabrication bake-off runs eight synthetic traps with a scripted model and
+the mock embedder. It is a regression check inside the harness, not a measure
+of production behavior:
 
 ```bash
 python benchmarks/trust_bakeoff.py

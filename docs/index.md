@@ -11,10 +11,14 @@ fact so an agent can act without treating a wish as a booking**.
 
 ## Status
 
-v0.2.0 — 139 tests passing (34 trust-model acceptance evals), type-checked
-under `mypy --strict`, ruff clean. Search p95 under 5ms at 5K memories.
-Fabrication bake-off: trust arm **0%** fabrication / **100%** recall vs
-raw-store baseline 50% / 88%.
+CI runs the full test suite, the trust-model acceptance evals in
+`tests/evals/`, ruff, and mypy on Python 3.10 to 3.12 and PostgreSQL. With
+SQLite and the mock embedder (no model call), search p95 was about 18 ms at
+5,000 memories on an Apple M4 Max in October 2026. A real embedding model adds
+its own latency. The fabrication bake-off scores eight synthetic traps with a
+scripted model: the trust arm fabricated 0% and recalled 100%, against 50% and
+88% for an untyped store. That is regression evidence inside the harness, not
+a measure of production behavior.
 
 ## Install
 
