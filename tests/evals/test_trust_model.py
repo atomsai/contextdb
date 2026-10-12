@@ -1731,3 +1731,53 @@ async def test_eval_exact_identifier_is_found_through_a_strict_floor(tmp_path: P
         assert await db.search("status of ORD-99999") == []
     finally:
         await db.close()
+
+
+async def test_eval_forget_user_removes_what_the_user_added_to_shared_entities(
+    tmp_path: Path,
+) -> None:
+    """Erasing Alice removes her attribute from a shared entity and keeps Bob's."""
+    db = contextdb.init(
+        tenant_id="org-shared",
+        config=make_config(tmp_path, name="residue.db", enable_entity_graph=True),
+    )
+    db._llm = MockLLM(
+        responses={
+            "Friday calls": '{"entities": [{"name": "Acme", "type": "ORG", '
+            '"attributes": {"plan": "gold"}}, {"name": "Northwind", "type": "ORG", '
+            '"attributes": {"tier": "trial"}}]}',
+            "Escalation contact": '{"entities": [{"name": "Acme", "type": "ORG", '
+            '"attributes": {"region": "west"}}]}',
+        }
+    )
+    try:
+        mine = await db.factual.add(
+            "Prefers Friday calls about the Acme and Northwind accounts.",
+            source="user_stated",
+            user_id="alice",
+        )
+        await db.factual.add(
+            "Escalation contact for the Acme renewal.", source="user_stated", user_id="bob"
+        )
+        conn = db._store._require_conn()  # type: ignore[union-attr]
+
+        async def entities() -> dict[str, dict[str, Any]]:
+            cursor = await conn.execute("SELECT name, attributes FROM entities")
+            return {row["name"]: json.loads(row["attributes"]) for row in await cursor.fetchall()}
+
+        assert await entities() == {
+            "Acme": {"plan": "gold", "region": "west"},
+            "Northwind": {"tier": "trial"},
+        }
+        await db.forget_user("alice")
+        assert await entities() == {"Acme": {"region": "west"}}
+        assert await db.verify_forgotten("alice") is True
+
+        await conn.execute(
+            "INSERT INTO entity_attribute_sources "
+            "(entity_id, attr_key, memory_id, value, created_at) VALUES (?,?,?,?,?)",
+            ("planted", "plan", mine.id, '"gold"', "2026-10-12T00:00:00+00:00"),
+        )
+        assert await db.verify_forgotten("alice") is False
+    finally:
+        await db.close()

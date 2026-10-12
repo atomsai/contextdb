@@ -1766,7 +1766,8 @@ class ContextDB:
 
         Checks, in order: (1) no rows for the user in any lifecycle state;
         (2) every id from the latest FORGET deletion set is gone from the
-        table; (3) no deleted id remains searchable in the vector index.
+        table; (3) no deleted id remains searchable in the vector index;
+        (4) no graph still holds an edge or entity attribute source for one.
         """
         await self._ensure_init()
         store = self._require_store()
@@ -1788,6 +1789,10 @@ class ContextDB:
             residue = set(deleted_ids) & await store.index_ids()
             if residue:
                 return False
+            for graph in self._graphs.values():
+                graph_residue = getattr(graph, "residue", None)
+                if graph_residue is not None and await graph_residue(deleted_ids):
+                    return False
         return True
 
     async def stats(self) -> dict[str, Any]:

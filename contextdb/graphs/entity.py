@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS memory_entity_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_mee_memory ON memory_entity_edges(memory_id);
 CREATE INDEX IF NOT EXISTS idx_mee_entity ON memory_entity_edges(entity_id);
+
+CREATE TABLE IF NOT EXISTS entity_attribute_sources (
+    entity_id TEXT NOT NULL,
+    attr_key TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    value TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (entity_id, attr_key, memory_id)
+);
+CREATE INDEX IF NOT EXISTS idx_eas_memory ON entity_attribute_sources(memory_id);
 """
 
 _EXTRACT_PROMPT = """Extract all named entities from the text. Return strict JSON.
@@ -105,7 +115,7 @@ class EntityGraph(BaseGraph):
             )
         return out
 
-    async def _find_or_create(self, entity: Entity) -> str:
+    async def _find_or_create(self, entity: Entity, memory_id: str | None = None) -> str:
         conn = self.store._require_conn()
         cursor = await conn.execute(
             "SELECT id, attributes FROM entities WHERE LOWER(name) = ?",
@@ -114,6 +124,7 @@ class EntityGraph(BaseGraph):
         rows = await cursor.fetchall()
         row = rows[0] if rows else None
         if row is not None:
+            eid = str(row["id"])
             if entity.attributes:
                 existing = json.loads(row["attributes"] or "{}")
                 existing.update(entity.attributes)
@@ -122,20 +133,40 @@ class EntityGraph(BaseGraph):
                     (
                         json.dumps(existing),
                         datetime.now(tz=timezone.utc).isoformat(),
-                        row["id"],
+                        eid,
                     ),
                 )
-                await conn.commit()
-            return str(row["id"])
-        eid = str(uuid4())
-        now = datetime.now(tz=timezone.utc).isoformat()
-        await conn.execute(
-            "INSERT INTO entities (id, name, entity_type, attributes, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (eid, entity.name, entity.entity_type, json.dumps(entity.attributes), now, now),
-        )
+        else:
+            eid = str(uuid4())
+            now = datetime.now(tz=timezone.utc).isoformat()
+            await conn.execute(
+                "INSERT INTO entities (id, name, entity_type, attributes, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (eid, entity.name, entity.entity_type, json.dumps(entity.attributes), now, now),
+            )
+        if memory_id is not None:
+            await self._record_sources(eid, entity.attributes, memory_id)
         await conn.commit()
         return eid
+
+    async def _record_sources(
+        self, entity_id: str, attributes: dict[str, Any], memory_id: str
+    ) -> None:
+        """Remember which memory supplied each attribute, so forgetting it can undo it."""
+        conn = self.store._require_conn()
+        now = datetime.now(tz=timezone.utc).isoformat()
+        for key, value in attributes.items():
+            encoded = json.dumps(value)
+            await conn.execute(
+                "INSERT OR IGNORE INTO entity_attribute_sources "
+                "(entity_id, attr_key, memory_id, value, created_at) VALUES (?,?,?,?,?)",
+                (entity_id, str(key), memory_id, encoded, now),
+            )
+            await conn.execute(
+                "UPDATE entity_attribute_sources SET value = ?, created_at = ? "
+                "WHERE entity_id = ? AND attr_key = ? AND memory_id = ?",
+                (encoded, now, entity_id, str(key), memory_id),
+            )
 
     async def _link_memory(self, memory_id: str, entity_id: str) -> None:
         conn = self.store._require_conn()
@@ -154,7 +185,7 @@ class EntityGraph(BaseGraph):
         if not extracted:
             return
         for ent in extracted:
-            eid = await self._find_or_create(ent)
+            eid = await self._find_or_create(ent, memory_id)
             await self._link_memory(memory_id, eid)
 
     async def add_edge(self, edge: Edge) -> None:
@@ -162,11 +193,86 @@ class EntityGraph(BaseGraph):
         return None
 
     async def remove_node(self, memory_id: str) -> None:
+        """Sever the memory and undo what it contributed to shared entities.
+
+        Entities are shared across users, so attributes are rebuilt from the
+        remaining sources rather than cleared, and an entity no memory still
+        mentions is deleted. Attributes merged before sources were recorded
+        cannot be attributed; they stay until their entity is unreferenced.
+        """
         conn = self.store._require_conn()
+        cursor = await conn.execute(
+            "SELECT entity_id FROM memory_entity_edges WHERE memory_id = ?", (memory_id,)
+        )
+        touched = {str(row["entity_id"]) for row in await cursor.fetchall()}
+        cursor = await conn.execute(
+            "SELECT entity_id, attr_key FROM entity_attribute_sources WHERE memory_id = ?",
+            (memory_id,),
+        )
+        contributed: dict[str, set[str]] = {}
+        for row in await cursor.fetchall():
+            contributed.setdefault(str(row["entity_id"]), set()).add(str(row["attr_key"]))
+        touched |= set(contributed)
         await conn.execute(
             "DELETE FROM memory_entity_edges WHERE memory_id = ?", (memory_id,)
         )
+        await conn.execute(
+            "DELETE FROM entity_attribute_sources WHERE memory_id = ?", (memory_id,)
+        )
+        for entity_id in sorted(touched):
+            await self._rebuild_entity(entity_id, contributed.get(entity_id, set()))
         await conn.commit()
+
+    async def _rebuild_entity(self, entity_id: str, keys: set[str]) -> None:
+        conn = self.store._require_conn()
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS n FROM memory_entity_edges WHERE entity_id = ?", (entity_id,)
+        )
+        edges = int((await cursor.fetchall())[0]["n"])
+        if edges == 0:
+            await conn.execute(
+                "DELETE FROM entity_attribute_sources WHERE entity_id = ?", (entity_id,)
+            )
+            await conn.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
+            return
+        if not keys:
+            return
+        cursor = await conn.execute("SELECT attributes FROM entities WHERE id = ?", (entity_id,))
+        rows = await cursor.fetchall()
+        if not rows:
+            return
+        attributes = json.loads(rows[0]["attributes"] or "{}")
+        for key in keys:
+            cursor = await conn.execute(
+                "SELECT value FROM entity_attribute_sources WHERE entity_id = ? AND attr_key = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (entity_id, key),
+            )
+            remaining = await cursor.fetchall()
+            if remaining:
+                attributes[key] = json.loads(remaining[0]["value"])
+            else:
+                attributes.pop(key, None)
+        await conn.execute(
+            "UPDATE entities SET attributes = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(attributes), datetime.now(tz=timezone.utc).isoformat(), entity_id),
+        )
+
+    async def residue(self, memory_ids: list[str]) -> int:
+        """Edges or attribute sources still pointing at any of ``memory_ids``."""
+        if not memory_ids:
+            return 0
+        conn = self.store._require_conn()
+        total = 0
+        for table in ("memory_entity_edges", "entity_attribute_sources"):
+            for start in range(0, len(memory_ids), 500):
+                chunk = memory_ids[start : start + 500]
+                marks = ",".join("?" for _ in chunk)
+                cursor = await conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {table} WHERE memory_id IN ({marks})", chunk
+                )
+                total += int((await cursor.fetchall())[0]["n"])
+        return total
 
     async def get_edges(self, memory_id: str) -> list[Edge]:
         conn = self.store._require_conn()
