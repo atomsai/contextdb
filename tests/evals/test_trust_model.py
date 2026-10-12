@@ -1588,3 +1588,41 @@ async def test_eval_billing_and_personal_email_are_separate_slots(db: ContextDB)
         attribute="billing_email",
     )
     assert mislabelled.epistemic_source == "agent_inferred"
+
+
+async def test_eval_appointment_kinds_are_separate_slots(db: ContextDB) -> None:
+    """A haircut on Monday must not replace or merge with a dentist visit on Monday."""
+    dentist = await db.factual.add(
+        "My dentist appointment is on Monday", source="user_stated", action_relevant=True
+    )
+    haircut = await db.factual.add(
+        "My haircut appointment is on Monday", source="user_stated", action_relevant=True
+    )
+    assert haircut.id != dentist.id
+    assert (dentist.entity_key, dentist.attribute_key) == ("dentist_appointment", "day")
+    assert (haircut.entity_key, haircut.slot_class) == ("haircut_appointment", "booking")
+    kept = await db.get(dentist.id)
+    assert kept is not None
+    assert kept.valid_until is None
+
+    scoped = await db.factual.recall_for_action(
+        "confirm my haircut", entity="haircut_appointment", attribute="day"
+    )
+    assert [m.id for m in scoped] == [haircut.id]
+
+    generic = await db.factual.add(
+        "My doctor's appointment is on Friday",
+        source="user_stated",
+        action_relevant=True,
+        entity="appointment",
+        attribute="day",
+    )
+    assert generic.epistemic_source == "user_stated"
+    mismatch = await db.factual.add(
+        "My haircut appointment moved to Tuesday",
+        source="user_stated",
+        action_relevant=True,
+        entity="dentist_appointment",
+        attribute="day",
+    )
+    assert mismatch.epistemic_source == "agent_inferred"

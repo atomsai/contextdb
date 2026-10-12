@@ -120,14 +120,39 @@ def canonicalize_slot(entity: str | None, attribute: str | None) -> Slot | None:
     if not ent or not attr:
         return None
     slot_class = SLOT_VOCAB.get((ent, attr))
+    if slot_class is None and _is_appointment_kind(ent) and attr in _APPOINTMENT_ATTRIBUTES:
+        slot_class = "booking"
     return Slot(entity=ent, attribute=attr, slot_class=slot_class)
+
+
+# A dentist appointment and a haircut appointment are different facts. Kind
+# entities such as ``dentist_appointment`` share the booking class and the
+# day/time/status attributes of ``appointment``.
+_APPOINTMENT_ATTRIBUTES = frozenset({"day", "time", "status"})
+
+
+def _is_appointment_kind(entity: str) -> bool:
+    return entity.endswith("_appointment") and len(entity) > len("_appointment")
+
+
+def _appointment_compatible(a: Slot, b: Slot) -> bool:
+    if a.attribute != b.attribute:
+        return False
+    family = {a.entity, b.entity}
+    if not all(e == "appointment" or _is_appointment_kind(e) for e in family):
+        return False
+    return "appointment" in family or len(family) == 1
 
 
 def slot_supported_by(explicit: Slot, inferred: Slot) -> bool:
     """Whether the slot the text implies is consistent with the one chosen."""
     chosen = (explicit.entity, explicit.attribute)
     implied = (inferred.entity, inferred.attribute)
-    return chosen == implied or _REFINES.get(chosen) == implied
+    return (
+        chosen == implied
+        or _REFINES.get(chosen) == implied
+        or _appointment_compatible(explicit, inferred)
+    )
 
 
 _WEEKDAYS = (
@@ -209,10 +234,31 @@ def infer_slot(content: str) -> Slot | None:
     if ("come in" in text or "stop by" in text or "appointment" in text) and _WEEKDAY_RE.search(
         content
     ):
-        return canonicalize_slot("appointment", "day")
+        return canonicalize_slot(_appointment_entity(content), "day")
     if ("come in" in text or "appointment" in text) and _TIME_RE.search(content):
-        return canonicalize_slot("appointment", "time")
+        return canonicalize_slot(_appointment_entity(content), "time")
     return None
+
+
+_APPOINTMENT_KIND_RE = re.compile(r"\b([a-z][a-z-]{2,})(?:'s)?\s+appointment\b", re.IGNORECASE)
+_NOT_A_KIND = frozenset(
+    {
+        "the", "your", "our", "his", "her", "their", "next", "this", "that", "upcoming",
+        "new", "first", "last", "same", "usual", "regular", "another", "any", "booked",
+        "scheduled", "confirmed", "missed", "morning", "afternoon", "evening", "today",
+        "tomorrow", "weekly", "monthly", "follow-up", *(_WEEKDAYS),
+    }
+)
+
+
+def _appointment_entity(content: str) -> str:
+    """``dentist_appointment`` for "my dentist appointment", else ``appointment``."""
+    match = _APPOINTMENT_KIND_RE.search(content)
+    if match:
+        kind = match.group(1).casefold()
+        if kind not in _NOT_A_KIND:
+            return f"{kind.replace('-', '_')}_appointment"
+    return "appointment"
 
 
 def infer_negation(content: str) -> bool:
