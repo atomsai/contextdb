@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## 0.4.7 — 2026-10-12
+
+- `forget_user` now removes what the user added to shared entities. Entity
+  attributes record the memory that supplied them, are rebuilt from the
+  remaining sources when a memory is removed, and an entity no memory still
+  mentions is deleted. `verify_forgotten` fails if an edge or attribute source
+  still points at a deleted memory. Attributes merged before 0.4.7 have no
+  recorded source and stay until their entity is unreferenced.
+- In encrypt and redact modes, a slot value that contains a detected PII span
+  is stored as a fingerprint, keyed with the PII encryption key when one is
+  configured. Slot values were taken from the original
+  utterance, so encrypt mode still wrote plaintext emails and phone numbers to
+  disk. Comparisons are unchanged. A value written before 0.4.7 compares as
+  different from the same value written now, so it is superseded once.
+- `consolidate_pending` no longer drops a new value that reads the same once
+  redacted. Two emails saved with `add_fast` both stored as `[EMAIL]`, so the
+  second consolidated into a no-op and was lost.
+- Recall adds a lexical ranking for identifiers (tokens of three or more
+  characters that contain a digit, such as order numbers and SKUs). An exact
+  identifier match passes the relevance floor. Stores gain `search_text`; no
+  schema change.
+- `pii_detect_names_and_addresses=True` also redacts street addresses and cued
+  names ("my name is", "call me", "this is" followed by two capitalized
+  words). Off by default, because a redacted address is hidden from the agent
+  too.
+- Appointment kinds get their own slots: "my dentist appointment" and "my
+  haircut appointment" no longer replace or merge with each other. Kind
+  entities such as `dentist_appointment` use the booking class, and a generic
+  `appointment` slot is still accepted where the text names a kind.
+- The relevance floor no longer recommends a fixed 0.15 to 0.25 band. Cosine
+  ranges are embedder-specific, and a floor cannot tell whether a memory
+  answers a request.
+- README and docs replace v0.1.0 performance numbers and fixed test counts
+  with current measurements, and state that no competitor arms ship in the
+  bake-off.
+
 ## 0.4.6 — 2026-10-08
 
 - A lower-trust write no longer replaces a first-party fact in its slot.

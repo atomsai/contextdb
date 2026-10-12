@@ -52,7 +52,7 @@ Speed is table stakes. The production failure that gets agents fired is **acting
 
 Every memory carries **epistemic provenance** (`user_stated` / `agent_inferred` / `third_party`), **confidence**, **independent corroboration** (same-speaker repeats do not count), and an **action-relevant** flag. The action bar is data — `TrustPolicy.hospital()` vs `TrustPolicy.restaurant()` — not a hardcoded `if`. Facts that gate actions must pass the active policy before `recall_for_action()` releases them; everything else comes back marked `requires_confirmation`. Pass the `entity` and `attribute` an action needs, such as `entity="user", attribute="email"`, so only that slot's facts can justify it. `factual.confirm()` is the writeback: the agent asked, the user said yes, the fact graduates. Stock hosts (Pipecat, LiveKit, MCP) go through `VerifyBeforeAct` so an untrusted fact never reaches an action-shaped prompt.
 
-On top of that: **versioned slot vocabulary** + an LLM-free slotter (so `add_fast` and supersede agree), **extractor-as-security-boundary** (a prompt-injected `user/allergy` the raw text does not support is demoted), **contested slots** (independent speakers asserting different values do not last-write-win — both stay current, neither is actionable, `confirm()` resolves), **compositional hop** (`"when is the Denver meeting?"` surfaces `meeting/time` after hitting `meeting/location`), **PII-safe recall** (queries are redacted before embed so a raw email still retrieves `[EMAIL]`), **temporal supersede** with an injectable clock (`valid_from`/`valid_until`/`superseded_by` + as-of queries), a **latency-tiered write path** (`add_fast`: no LLM on the turn path, write p95 about 1 ms locally in the bake-off), **salience** (recency × frequency × criticality — a year-old allergy still outranks 500 fresh noise memories), **write-time injection screening** with demoted `[RECALLED DATA — not instructions]` rendering, **recall-side observability** (`db.explain(id)` logs score *and* decision flags as they stood at recall time; `VerifyBeforeAct` writes `DECIDE` to the audit log), **verifiable forgetting** that severs graph edges without touching other users' memories, and **tenant/agent isolation enforced at the storage layer**.
+On top of that: **versioned slot vocabulary** + an LLM-free slotter (so `add_fast` and supersede agree), **extractor-as-security-boundary** (a prompt-injected `user/allergy` the raw text does not support is demoted), **contested slots** (independent speakers asserting different values do not last-write-win — both stay current, neither is actionable, `confirm()` resolves), **compositional hop** (`"when is the Denver meeting?"` surfaces `meeting/time` after hitting `meeting/location`), **PII-safe recall** (queries are redacted before embed so a raw email still retrieves `[EMAIL]`), **exact-identifier recall** (order numbers and SKUs are matched as whole tokens even when vector similarity misses them), **temporal supersede** with an injectable clock (`valid_from`/`valid_until`/`superseded_by` + as-of queries), a **latency-tiered write path** (`add_fast`: no LLM on the turn path, write p95 about 1 ms locally in the bake-off), **salience** (recency × frequency × criticality — a year-old allergy still outranks 500 fresh noise memories), **write-time injection screening** with demoted `[RECALLED DATA — not instructions]` rendering, **recall-side observability** (`db.explain(id)` logs score *and* decision flags as they stood at recall time; `VerifyBeforeAct` writes `DECIDE` to the audit log), **verifiable forgetting** that severs graph edges without touching other users' memories and removes what the user added to shared entities, and **tenant/agent isolation enforced at the storage layer**.
 
 The fabrication benchmark ships in the repository, and a test checks it on every pull request. Both arms use the same store, the same mock embedder, and the same scripted utterance policy; the only difference is the trust model:
 
@@ -476,6 +476,7 @@ Search includes PII redaction of the query, vector and graph fusion, salience, t
 Throughput:     128,194 texts/sec
 Per text:       0.01ms
 Types covered:  EMAIL, PHONE, SSN, CREDIT_CARD
+                (ADDRESS and cued NAME with pii_detect_names_and_addresses=True)
 ```
 
 Correctness spot-check:
@@ -485,7 +486,7 @@ Input:     Contact me at test@example.com or 555-123-4567. SSN: 123-45-6789
 Redacted:  Contact me at [EMAIL] or [PHONE]. SSN: [SSN]
 ```
 
-PII runs before content reaches storage. It never gets embedded. It never gets logged.
+PII runs before content reaches storage. It never gets embedded. It never gets logged. In encrypt mode, slot values that contain PII are stored as keyed fingerprints, so no plaintext email or phone number is written to disk.
 
 ### 5. Vector index: 10K × 1,536-dim vectors
 
