@@ -1123,7 +1123,7 @@ class ContextDB:
                 processed_query
             )
             scored = await self._retrieval.search_scored(
-                query, query_embedding, top_k=top_k * 3, user_id=uid
+                processed_query, query_embedding, top_k=top_k * 3, user_id=uid
             )
         except Exception as exc:  # noqa: BLE001
             if not self.config.lexical_on_embed_failure:
@@ -1134,7 +1134,8 @@ class ContextDB:
         floor = self.trust_policy.relevance_floor
         # Floor is on cosine (comparable across queries), not RRF×salience
         # (which is ~0.01–0.1 and would abstain on everything).
-        scored = [s for s in scored if s.cosine >= floor]
+        # An exact identifier match is evidence even when its cosine is low.
+        scored = [s for s in scored if s.cosine >= floor or "lexical" in s.per_graph]
         items = [s.item for s in scored if s.item.is_valid_at(moment)]
         if memory_type is not None:
             items = [m for m in items if m.memory_type == memory_type]

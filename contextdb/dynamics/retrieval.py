@@ -79,6 +79,25 @@ class QueryClassifier:
         return {k: v / total for k, v in weights.items()}
 
 
+# Tokens that look like identifiers: order numbers, SKUs, account references.
+# Ordinary words never enter the lexical ranking, so an exact-identifier hit
+# can bypass the relevance floor without making weak overlap a back door.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9#][A-Za-z0-9#_./-]*[A-Za-z0-9]")
+_MAX_IDENTIFIERS = 3
+
+
+def identifier_tokens(text: str) -> list[str]:
+    """Up to three distinct case-folded tokens of 3+ characters that contain a digit."""
+    tokens: list[str] = []
+    for match in _IDENTIFIER_RE.finditer(text):
+        token = match.group().casefold()
+        if len(token) >= 3 and any(c.isdigit() for c in token) and token not in tokens:
+            tokens.append(token)
+        if len(tokens) == _MAX_IDENTIFIERS:
+            break
+    return tokens
+
+
 class RetrievalFuser:
     """Reciprocal Rank Fusion over per-graph candidate lists."""
 
@@ -187,6 +206,16 @@ class RetrievalEngine:
                     expanded[nid] = max(expanded.get(nid, 0.0), weight)
             rankings[name] = sorted(expanded.items(), key=lambda kv: kv[1], reverse=True)
 
+        lexical_items: dict[str, MemoryItem] = {}
+        tokens = identifier_tokens(query)
+        if tokens:
+            lexical_ranking, lexical_items = await self._lexical_ranking(
+                tokens, user_id, limit=max(top_k * 2, 10)
+            )
+            if lexical_ranking:
+                rankings["lexical"] = lexical_ranking
+                weights = {**weights, "lexical": max(weights.values(), default=1.0)}
+
         fused = self.fuser.fuse(rankings, weights)
         now = self.clock()
         seed_cosine = {
@@ -213,7 +242,7 @@ class RetrievalEngine:
         else:
             scored = []
             for mid, rrf_score in fused:
-                item = seed_by_id.get(mid)
+                item = seed_by_id.get(mid) or lexical_items.get(mid)
                 if item is None:
                     item = await self.store.get_raw(mid)
                 if item is None:
@@ -232,6 +261,26 @@ class RetrievalEngine:
             replace(score, item=_detached_memory_copy(score.item))
             for score in scored[:top_k]
         ]
+
+    async def _lexical_ranking(
+        self,
+        tokens: list[str],
+        user_id: str | None,
+        limit: int,
+    ) -> tuple[list[tuple[str, float]], dict[str, MemoryItem]]:
+        """Memories containing each identifier as a whole token, most matches first."""
+        matches: dict[str, int] = {}
+        items: dict[str, MemoryItem] = {}
+        for token in tokens:
+            whole = re.compile(
+                rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])", re.IGNORECASE
+            )
+            for item in await self.store.search_text(token, user_id=user_id, limit=limit):
+                if whole.search(item.content):
+                    matches[item.id] = matches.get(item.id, 0) + 1
+                    items[item.id] = item
+        ranked = sorted(matches.items(), key=lambda kv: kv[1], reverse=True)
+        return [(mid, float(count)) for mid, count in ranked], items
 
     def _score(
         self,

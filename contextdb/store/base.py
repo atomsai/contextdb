@@ -77,6 +77,19 @@ class BaseStore(ABC):
     ) -> list[MemoryItem]:
         """List memories with optional filters."""
 
+    async def search_text(
+        self,
+        token: str,
+        user_id: str | None = None,
+        limit: int = 20,
+    ) -> list[MemoryItem]:
+        """Active memories whose content contains ``token``, newest first.
+
+        Used to find exact identifiers that vector similarity can miss.
+        Stores without text search return nothing.
+        """
+        return []
+
     @abstractmethod
     async def count(self, user_id: str | None = None) -> int:
         """Count active memories, optionally scoped to a user."""
@@ -231,3 +244,9 @@ class BaseStore(ABC):
         processes. Single-process stores return a per-instance lock.
         """
         raise NotImplementedError
+
+
+def like_pattern(token: str) -> str:
+    """Case-folded ``LIKE`` pattern for a substring, escaped with ``!``."""
+    escaped = token.casefold().replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return f"%{escaped}%"

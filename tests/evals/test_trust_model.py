@@ -1701,3 +1701,33 @@ async def test_eval_encrypt_mode_keeps_pii_out_of_every_stored_byte(tmp_path: Pa
     secrets = (b"alice.example@example.com", b"bob.example", b"12 Elm Street", b"12 elm street")
     for secret in secrets:
         assert secret not in stored
+
+
+async def test_eval_exact_identifier_is_found_through_a_strict_floor(tmp_path: Path) -> None:
+    """An order number the embedder cannot tell apart still finds its memory."""
+    from contextdb.core.policy import TrustPolicy
+
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(tmp_path, name="ids.db"),
+        trust_policy=TrustPolicy(relevance_floor=0.99),
+    )
+    try:
+        for number in range(40):
+            await db.factual.add(
+                f"Order ORD-{48000 + number} shipped on Monday",
+                source="user_stated",
+                action_relevant=True,
+            )
+        target = await db.factual.add(
+            "Order ORD-48213 was refunded on Friday",
+            source="user_stated",
+            action_relevant=True,
+        )
+        hits = await db.search("What happened with ord-48213?")
+        assert [m.id for m in hits][:1] == [target.id]
+        assert all("48213" in m.content for m in hits)
+        assert await db.search("which order was refunded") == []
+        assert await db.search("status of ORD-99999") == []
+    finally:
+        await db.close()
