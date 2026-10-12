@@ -1364,12 +1364,22 @@ class ContextDB:
                 # by the raw text, and extracted trust cannot exceed what
                 # the raw itself would have been assigned.
                 self._apply_slot(new_item, raw_text=raw.content, extractor_bound=True)
+                if raw.slot_value is not None and (new_item.entity_key, new_item.attribute_key) == (
+                    raw.entity_key,
+                    raw.attribute_key,
+                ):
+                    # Stored content is already redacted, so two different
+                    # emails both read "[EMAIL]". The pending row kept the
+                    # value derived from the original utterance.
+                    new_item.slot_value = raw.slot_value
                 if new_item.epistemic_source == "user_stated" and not infer_slot(
                     raw.content
                 ):
                     new_item.epistemic_source = "agent_inferred"
                 self._screen_item(new_item)
-                saved, outcome = await self._trust.write(new_item, user_id=self.user_id)
+                saved, outcome = await self._trust.write(
+                    new_item, user_id=self.user_id, replacing=raw.id
+                )
                 if outcome in {"added", "superseded", "contested"}:
                     await self._link(saved.id)
             await store.update(

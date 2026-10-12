@@ -1626,3 +1626,38 @@ async def test_eval_appointment_kinds_are_separate_slots(db: ContextDB) -> None:
         attribute="day",
     )
     assert mismatch.epistemic_source == "agent_inferred"
+
+
+async def test_eval_consolidation_keeps_different_redacted_values_apart(tmp_path: Path) -> None:
+    """Two emails saved with add_fast both read "[EMAIL]"; the second must still win."""
+    db = contextdb.init(user_id="eval-user", config=make_config(tmp_path))
+    try:
+        await db._ensure_init()
+        assert db._formation is not None and db._store is not None
+
+        async def echo(content: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "content": content,
+                    "memory_type": "FACTUAL",
+                    "entity_key": "user",
+                    "attribute_key": "email",
+                    "epistemic_source": "user_stated",
+                    "confidence": 0.9,
+                    "action_relevant": True,
+                }
+            ]
+
+        db._formation.extractor.extract = echo  # type: ignore[method-assign]
+        await db.factual.add_fast("My email is alice.example@example.com")
+        await db.consolidate_pending()
+        await db.factual.add_fast("My email is bob.example@example.com")
+        await db.consolidate_pending()
+        rows = await db._store.list_by_slot("user", "email", user_id=db._resolve_user(None))
+        current = [m for m in rows if m.is_valid_at(db.clock()) and not m.pending_consolidation]
+        assert len(current) == 1
+        assert current[0].slot_value is not None
+        assert current[0].slot_value.endswith("bob.example@example.com")
+        assert "bob.example@example.com" not in current[0].content
+    finally:
+        await db.close()
