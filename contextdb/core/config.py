@@ -78,6 +78,15 @@ class ContextDBConfig(BaseSettings):
         default="redact",
         description="How detected PII should be handled before storage.",
     )
+    pii_detect_names_and_addresses: bool = Field(
+        default=False,
+        description=(
+            "Also redact street addresses and cued names (\"my name is ...\"). "
+            "Off by default because a redacted address or name is hidden from "
+            "the agent too; turn it on when those must not reach storage or "
+            "embeddings."
+        ),
+    )
     pii_encryption_key: str | None = Field(
         default=None,
         description=(

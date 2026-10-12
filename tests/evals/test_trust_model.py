@@ -1649,15 +1649,55 @@ async def test_eval_consolidation_keeps_different_redacted_values_apart(tmp_path
             ]
 
         db._formation.extractor.extract = echo  # type: ignore[method-assign]
-        await db.factual.add_fast("My email is alice.example@example.com")
+        alice = await db.factual.add_fast("My email is alice.example@example.com")
         await db.consolidate_pending()
-        await db.factual.add_fast("My email is bob.example@example.com")
+        bob = await db.factual.add_fast("My email is bob.example@example.com")
         await db.consolidate_pending()
         rows = await db._store.list_by_slot("user", "email", user_id=db._resolve_user(None))
         current = [m for m in rows if m.is_valid_at(db.clock()) and not m.pending_consolidation]
         assert len(current) == 1
-        assert current[0].slot_value is not None
-        assert current[0].slot_value.endswith("bob.example@example.com")
+        assert bob.slot_value is not None and bob.slot_value != alice.slot_value
+        assert current[0].slot_value == bob.slot_value
         assert "bob.example@example.com" not in current[0].content
     finally:
         await db.close()
+
+
+async def test_eval_encrypt_mode_keeps_pii_out_of_every_stored_byte(tmp_path: Path) -> None:
+    """Content, annotations, and slot values: no plaintext email or address on disk."""
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(
+            tmp_path,
+            name="pii.db",
+            pii_action="encrypt",
+            pii_encryption_key="synthetic-eval-key",
+            pii_detect_names_and_addresses=True,
+        ),
+    )
+    try:
+        first = await db.factual.add(
+            "My email is alice.example@example.com",
+            source="user_stated", action_relevant=True, entity="user", attribute="email",
+        )
+        second = await db.factual.add(
+            "My email is bob.example@example.com",
+            source="user_stated", action_relevant=True, entity="user", attribute="email",
+        )
+        await db.factual.add(
+            "My home address is 12 Elm Street, Springfield",
+            source="user_stated", action_relevant=True, entity="user", attribute="address",
+        )
+        day = await db.factual.add(
+            "My dentist appointment is on Monday", source="user_stated", action_relevant=True
+        )
+        replaced = await db.get(first.id)
+        assert replaced is not None
+        assert replaced.superseded_by == second.id
+        assert day.slot_value == "monday"
+    finally:
+        await db.close()
+    stored = b"".join(path.read_bytes() for path in tmp_path.glob("pii.db*"))
+    secrets = (b"alice.example@example.com", b"bob.example", b"12 Elm Street", b"12 elm street")
+    for secret in secrets:
+        assert secret not in stored

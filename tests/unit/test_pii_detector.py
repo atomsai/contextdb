@@ -85,3 +85,36 @@ def test_pii_encrypt_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "[EMAIL]" in out
     assert anns[0].original != "foo@bar.com"
     assert det.decrypt(anns[0]) == "foo@bar.com"
+
+
+def test_names_and_addresses_are_opt_in() -> None:
+    text = "My name is Priya Sharma and I live at 12 Elm Street, Springfield."
+    assert PIIDetector().process(text)[0] == text
+
+    out, anns = PIIDetector(detect_names_and_addresses=True).process(text)
+    assert out == "My name is [NAME] and I live at [ADDRESS], Springfield."
+    assert {a.pii_type for a in anns} == {PIIType.NAME, PIIType.ADDRESS}
+    assert {a.original for a in anns} == {"Priya Sharma", "12 Elm Street"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Call me tomorrow about the order",
+        "This is Monday's schedule",
+        "My name is not important",
+        "Order 12 shipped on Main",
+        "We need 3 more chairs",
+    ],
+)
+def test_name_and_address_patterns_need_strong_cues(text: str) -> None:
+    assert PIIDetector(detect_names_and_addresses=True).detect(text) == []
+
+
+def test_cued_names_and_suffixed_streets_are_found() -> None:
+    det = PIIDetector(detect_names_and_addresses=True)
+    found = {
+        (a.pii_type, a.original)
+        for a in det.detect("Hi, this is Jordan Rivera. Ship to 4410 Lake Shore Dr. please.")
+    }
+    assert found == {(PIIType.NAME, "Jordan Rivera"), (PIIType.ADDRESS, "4410 Lake Shore Dr.")}

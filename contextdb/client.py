@@ -17,8 +17,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import hmac
 import inspect
 import logging
+import os
 import warnings
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
@@ -62,6 +64,7 @@ from contextdb.store.factory import open_store
 from contextdb.utils.embeddings import EmbeddingProvider, get_embedding_provider, wrap_embedder
 from contextdb.utils.llm import LazyLLM, LLMProvider
 
+_SLOT_FINGERPRINT_PREFIX = "pii:"
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -195,6 +198,7 @@ class ContextDB:
         self._pii = PIIDetector(
             action=self.config.pii_action,
             encryption_key=self.config.pii_encryption_key,
+            detect_names_and_addresses=self.config.pii_detect_names_and_addresses,
         )
 
         # Graphs (local imports to avoid circular references at module load)
@@ -426,6 +430,7 @@ class ContextDB:
             item.slot_class = chosen.slot_class
             if item.slot_value is None:
                 item.slot_value = canonical_slot_value(source_text, chosen)
+            item.slot_value = self._protect_slot_value(item.slot_value, source_text)
         item.negated = infer_negation(source_text)
         if item.tenant_id is None:
             item.tenant_id = self.tenant_id
@@ -434,6 +439,29 @@ class ContextDB:
         if item.session_id is None:
             item.session_id = self.session_id
         return item
+
+    def _protect_slot_value(self, value: str | None, source_text: str) -> str | None:
+        """Keep PII out of the stored slot value, which exists only for comparison.
+
+        Content is redacted before storage, but the slot value is derived
+        from the original utterance so two different emails stay different.
+        When it contains a detected PII span, store a keyed fingerprint.
+        """
+        if value is None or value.startswith(_SLOT_FINGERPRINT_PREFIX):
+            return value
+        if self._pii is None or self._pii.action not in {"redact", "encrypt"}:
+            return value
+        folded = value.casefold()
+        spans = [source_text[a.start : a.end].casefold() for a in self._pii.detect(source_text)]
+        if not any(span and span in folded for span in spans):
+            return value
+        key = (
+            self.config.pii_encryption_key
+            or os.environ.get("CONTEXTDB_PII_KEY")
+            or "contextdb-slot-value"
+        ).encode("utf-8")
+        digest = hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+        return f"{_SLOT_FINGERPRINT_PREFIX}{digest}"
 
     def _pii_shadow(self, annotations: list[Any], processed: str) -> str | None:
         """Typed stand-in so a query with a real email can still retrieve [EMAIL]."""
@@ -453,6 +481,7 @@ class ContextDB:
             self._pii = PIIDetector(
                 action=self.config.pii_action,
                 encryption_key=self.config.pii_encryption_key,
+                detect_names_and_addresses=self.config.pii_detect_names_and_addresses,
             )
         return self._pii.process(text)[0]
 
