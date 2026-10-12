@@ -78,6 +78,15 @@ class ContextDBConfig(BaseSettings):
         default="redact",
         description="How detected PII should be handled before storage.",
     )
+    pii_detect_names_and_addresses: bool = Field(
+        default=False,
+        description=(
+            "Also redact street addresses and cued names (\"my name is ...\"). "
+            "Off by default because a redacted address or name is hidden from "
+            "the agent too; turn it on when those must not reach storage or "
+            "embeddings."
+        ),
+    )
     pii_encryption_key: str | None = Field(
         default=None,
         description=(
@@ -95,9 +104,10 @@ class ContextDBConfig(BaseSettings):
         default=-1.0,
         description=(
             "Minimum cosine for a recall hit. -1 disables the floor. "
-            "0 is NOT off (it drops negative cosines). Production "
-            "embedders should use 0.15–0.25 — below that, top-1 "
-            "similarity is a guess, not a memory."
+            "0 is NOT off (it drops negative cosines). Cosine ranges are "
+            "embedder-specific (multilingual-e5 scores almost everything "
+            "between 0.7 and 1.0), so calibrate on your own labelled data. "
+            "See TrustPolicy.relevance_floor."
         ),
     )
     enable_salience: bool = Field(

@@ -1588,3 +1588,196 @@ async def test_eval_billing_and_personal_email_are_separate_slots(db: ContextDB)
         attribute="billing_email",
     )
     assert mislabelled.epistemic_source == "agent_inferred"
+
+
+async def test_eval_appointment_kinds_are_separate_slots(db: ContextDB) -> None:
+    """A haircut on Monday must not replace or merge with a dentist visit on Monday."""
+    dentist = await db.factual.add(
+        "My dentist appointment is on Monday", source="user_stated", action_relevant=True
+    )
+    haircut = await db.factual.add(
+        "My haircut appointment is on Monday", source="user_stated", action_relevant=True
+    )
+    assert haircut.id != dentist.id
+    assert (dentist.entity_key, dentist.attribute_key) == ("dentist_appointment", "day")
+    assert (haircut.entity_key, haircut.slot_class) == ("haircut_appointment", "booking")
+    kept = await db.get(dentist.id)
+    assert kept is not None
+    assert kept.valid_until is None
+
+    scoped = await db.factual.recall_for_action(
+        "confirm my haircut", entity="haircut_appointment", attribute="day"
+    )
+    assert [m.id for m in scoped] == [haircut.id]
+
+    generic = await db.factual.add(
+        "My doctor's appointment is on Friday",
+        source="user_stated",
+        action_relevant=True,
+        entity="appointment",
+        attribute="day",
+    )
+    assert generic.epistemic_source == "user_stated"
+    mismatch = await db.factual.add(
+        "My haircut appointment moved to Tuesday",
+        source="user_stated",
+        action_relevant=True,
+        entity="dentist_appointment",
+        attribute="day",
+    )
+    assert mismatch.epistemic_source == "agent_inferred"
+
+
+async def test_eval_consolidation_keeps_different_redacted_values_apart(tmp_path: Path) -> None:
+    """Two emails saved with add_fast both read "[EMAIL]"; the second must still win."""
+    db = contextdb.init(user_id="eval-user", config=make_config(tmp_path))
+    try:
+        await db._ensure_init()
+        assert db._formation is not None and db._store is not None
+
+        async def echo(content: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "content": content,
+                    "memory_type": "FACTUAL",
+                    "entity_key": "user",
+                    "attribute_key": "email",
+                    "epistemic_source": "user_stated",
+                    "confidence": 0.9,
+                    "action_relevant": True,
+                }
+            ]
+
+        db._formation.extractor.extract = echo  # type: ignore[method-assign]
+        alice = await db.factual.add_fast("My email is alice.example@example.com")
+        await db.consolidate_pending()
+        bob = await db.factual.add_fast("My email is bob.example@example.com")
+        await db.consolidate_pending()
+        rows = await db._store.list_by_slot("user", "email", user_id=db._resolve_user(None))
+        current = [m for m in rows if m.is_valid_at(db.clock()) and not m.pending_consolidation]
+        assert len(current) == 1
+        assert bob.slot_value is not None and bob.slot_value != alice.slot_value
+        assert current[0].slot_value == bob.slot_value
+        assert "bob.example@example.com" not in current[0].content
+    finally:
+        await db.close()
+
+
+async def test_eval_encrypt_mode_keeps_pii_out_of_every_stored_byte(tmp_path: Path) -> None:
+    """Content, annotations, and slot values: no plaintext email or address on disk."""
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(
+            tmp_path,
+            name="pii.db",
+            pii_action="encrypt",
+            pii_encryption_key="synthetic-eval-key",
+            pii_detect_names_and_addresses=True,
+        ),
+    )
+    try:
+        first = await db.factual.add(
+            "My email is alice.example@example.com",
+            source="user_stated", action_relevant=True, entity="user", attribute="email",
+        )
+        second = await db.factual.add(
+            "My email is bob.example@example.com",
+            source="user_stated", action_relevant=True, entity="user", attribute="email",
+        )
+        await db.factual.add(
+            "My home address is 12 Elm Street, Springfield",
+            source="user_stated", action_relevant=True, entity="user", attribute="address",
+        )
+        day = await db.factual.add(
+            "My dentist appointment is on Monday", source="user_stated", action_relevant=True
+        )
+        replaced = await db.get(first.id)
+        assert replaced is not None
+        assert replaced.superseded_by == second.id
+        assert day.slot_value == "monday"
+    finally:
+        await db.close()
+    stored = b"".join(path.read_bytes() for path in tmp_path.glob("pii.db*"))
+    secrets = (b"alice.example@example.com", b"bob.example", b"12 Elm Street", b"12 elm street")
+    for secret in secrets:
+        assert secret not in stored
+
+
+async def test_eval_exact_identifier_is_found_through_a_strict_floor(tmp_path: Path) -> None:
+    """An order number the embedder cannot tell apart still finds its memory."""
+    from contextdb.core.policy import TrustPolicy
+
+    db = contextdb.init(
+        user_id="eval-user",
+        config=make_config(tmp_path, name="ids.db"),
+        trust_policy=TrustPolicy(relevance_floor=0.99),
+    )
+    try:
+        for number in range(40):
+            await db.factual.add(
+                f"Order ORD-{48000 + number} shipped on Monday",
+                source="user_stated",
+                action_relevant=True,
+            )
+        target = await db.factual.add(
+            "Order ORD-48213 was refunded on Friday",
+            source="user_stated",
+            action_relevant=True,
+        )
+        hits = await db.search("What happened with ord-48213?")
+        assert [m.id for m in hits][:1] == [target.id]
+        assert all("48213" in m.content for m in hits)
+        assert await db.search("which order was refunded") == []
+        assert await db.search("status of ORD-99999") == []
+    finally:
+        await db.close()
+
+
+async def test_eval_forget_user_removes_what_the_user_added_to_shared_entities(
+    tmp_path: Path,
+) -> None:
+    """Erasing Alice removes her attribute from a shared entity and keeps Bob's."""
+    db = contextdb.init(
+        tenant_id="org-shared",
+        config=make_config(tmp_path, name="residue.db", enable_entity_graph=True),
+    )
+    db._llm = MockLLM(
+        responses={
+            "Friday calls": '{"entities": [{"name": "Acme", "type": "ORG", '
+            '"attributes": {"plan": "gold"}}, {"name": "Northwind", "type": "ORG", '
+            '"attributes": {"tier": "trial"}}]}',
+            "Escalation contact": '{"entities": [{"name": "Acme", "type": "ORG", '
+            '"attributes": {"region": "west"}}]}',
+        }
+    )
+    try:
+        mine = await db.factual.add(
+            "Prefers Friday calls about the Acme and Northwind accounts.",
+            source="user_stated",
+            user_id="alice",
+        )
+        await db.factual.add(
+            "Escalation contact for the Acme renewal.", source="user_stated", user_id="bob"
+        )
+        conn = db._store._require_conn()  # type: ignore[union-attr]
+
+        async def entities() -> dict[str, dict[str, Any]]:
+            cursor = await conn.execute("SELECT name, attributes FROM entities")
+            return {row["name"]: json.loads(row["attributes"]) for row in await cursor.fetchall()}
+
+        assert await entities() == {
+            "Acme": {"plan": "gold", "region": "west"},
+            "Northwind": {"tier": "trial"},
+        }
+        await db.forget_user("alice")
+        assert await entities() == {"Acme": {"region": "west"}}
+        assert await db.verify_forgotten("alice") is True
+
+        await conn.execute(
+            "INSERT INTO entity_attribute_sources "
+            "(entity_id, attr_key, memory_id, value, created_at) VALUES (?,?,?,?,?)",
+            ("planted", "plan", mine.id, '"gold"', "2026-10-12T00:00:00+00:00"),
+        )
+        assert await db.verify_forgotten("alice") is False
+    finally:
+        await db.close()

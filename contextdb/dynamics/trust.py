@@ -169,12 +169,15 @@ class TrustEngine:
         self,
         item: MemoryItem,
         user_id: str | None = None,
+        *,
+        replacing: str | None = None,
     ) -> tuple[MemoryItem, WriteOutcome]:
         """Store ``item`` with dedupe/contradiction semantics.
 
         Returns the winning memory (the existing one when corroborating) and
         what happened. Falls back to a plain insert when no slot keys are
-        present — you cannot dedupe what you cannot key.
+        present — you cannot dedupe what you cannot key. ``replacing`` names
+        a row this write consolidates; it is not compared against.
         """
         incoming_speaker = speaker_id(user_id, item.session_id, item.agent_id)
         if incoming_speaker not in item.corroborated_by:
@@ -201,7 +204,7 @@ class TrustEngine:
         async with lock:
             now = self.clock()
             item.valid_from = now
-            return await self._write_locked(item, user_id, now, slot)
+            return await self._write_locked(item, user_id, now, slot, replacing)
 
     async def _write_locked(
         self,
@@ -209,11 +212,16 @@ class TrustEngine:
         user_id: str | None,
         now: datetime,
         slot: Slot | None,
+        replacing: str | None = None,
     ) -> tuple[MemoryItem, WriteOutcome]:
         slot_rows = await self.store.list_by_slot(
             item.entity_key or "", item.attribute_key or "", user_id=user_id
         )
-        current = [c for c in slot_rows if c.id != item.id and c.is_valid_at(now)]
+        current = [
+            c
+            for c in slot_rows
+            if c.id not in (item.id, replacing) and c.is_valid_at(now)
+        ]
         max_gen = max((c.write_generation for c in slot_rows), default=0)
 
         # Pending raws must not supersede a newer typed fact (consolidator race).

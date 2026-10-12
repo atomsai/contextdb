@@ -17,8 +17,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import hmac
 import inspect
 import logging
+import os
 import warnings
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
@@ -62,6 +64,7 @@ from contextdb.store.factory import open_store
 from contextdb.utils.embeddings import EmbeddingProvider, get_embedding_provider, wrap_embedder
 from contextdb.utils.llm import LazyLLM, LLMProvider
 
+_SLOT_FINGERPRINT_PREFIX = "pii:"
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -195,6 +198,7 @@ class ContextDB:
         self._pii = PIIDetector(
             action=self.config.pii_action,
             encryption_key=self.config.pii_encryption_key,
+            detect_names_and_addresses=self.config.pii_detect_names_and_addresses,
         )
 
         # Graphs (local imports to avoid circular references at module load)
@@ -426,6 +430,7 @@ class ContextDB:
             item.slot_class = chosen.slot_class
             if item.slot_value is None:
                 item.slot_value = canonical_slot_value(source_text, chosen)
+            item.slot_value = self._protect_slot_value(item.slot_value, source_text)
         item.negated = infer_negation(source_text)
         if item.tenant_id is None:
             item.tenant_id = self.tenant_id
@@ -434,6 +439,29 @@ class ContextDB:
         if item.session_id is None:
             item.session_id = self.session_id
         return item
+
+    def _protect_slot_value(self, value: str | None, source_text: str) -> str | None:
+        """Keep PII out of the stored slot value, which exists only for comparison.
+
+        Content is redacted before storage, but the slot value is derived
+        from the original utterance so two different emails stay different.
+        When it contains a detected PII span, store a keyed fingerprint.
+        """
+        if value is None or value.startswith(_SLOT_FINGERPRINT_PREFIX):
+            return value
+        if self._pii is None or self._pii.action not in {"redact", "encrypt"}:
+            return value
+        folded = value.casefold()
+        spans = [source_text[a.start : a.end].casefold() for a in self._pii.detect(source_text)]
+        if not any(span and span in folded for span in spans):
+            return value
+        key = (
+            self.config.pii_encryption_key
+            or os.environ.get("CONTEXTDB_PII_KEY")
+            or "contextdb-slot-value"
+        ).encode("utf-8")
+        digest = hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+        return f"{_SLOT_FINGERPRINT_PREFIX}{digest}"
 
     def _pii_shadow(self, annotations: list[Any], processed: str) -> str | None:
         """Typed stand-in so a query with a real email can still retrieve [EMAIL]."""
@@ -453,6 +481,7 @@ class ContextDB:
             self._pii = PIIDetector(
                 action=self.config.pii_action,
                 encryption_key=self.config.pii_encryption_key,
+                detect_names_and_addresses=self.config.pii_detect_names_and_addresses,
             )
         return self._pii.process(text)[0]
 
@@ -1094,7 +1123,7 @@ class ContextDB:
                 processed_query
             )
             scored = await self._retrieval.search_scored(
-                query, query_embedding, top_k=top_k * 3, user_id=uid
+                processed_query, query_embedding, top_k=top_k * 3, user_id=uid
             )
         except Exception as exc:  # noqa: BLE001
             if not self.config.lexical_on_embed_failure:
@@ -1105,7 +1134,8 @@ class ContextDB:
         floor = self.trust_policy.relevance_floor
         # Floor is on cosine (comparable across queries), not RRF×salience
         # (which is ~0.01–0.1 and would abstain on everything).
-        scored = [s for s in scored if s.cosine >= floor]
+        # An exact identifier match is evidence even when its cosine is low.
+        scored = [s for s in scored if s.cosine >= floor or "lexical" in s.per_graph]
         items = [s.item for s in scored if s.item.is_valid_at(moment)]
         if memory_type is not None:
             items = [m for m in items if m.memory_type == memory_type]
@@ -1364,12 +1394,22 @@ class ContextDB:
                 # by the raw text, and extracted trust cannot exceed what
                 # the raw itself would have been assigned.
                 self._apply_slot(new_item, raw_text=raw.content, extractor_bound=True)
+                if raw.slot_value is not None and (new_item.entity_key, new_item.attribute_key) == (
+                    raw.entity_key,
+                    raw.attribute_key,
+                ):
+                    # Stored content is already redacted, so two different
+                    # emails both read "[EMAIL]". The pending row kept the
+                    # value derived from the original utterance.
+                    new_item.slot_value = raw.slot_value
                 if new_item.epistemic_source == "user_stated" and not infer_slot(
                     raw.content
                 ):
                     new_item.epistemic_source = "agent_inferred"
                 self._screen_item(new_item)
-                saved, outcome = await self._trust.write(new_item, user_id=self.user_id)
+                saved, outcome = await self._trust.write(
+                    new_item, user_id=self.user_id, replacing=raw.id
+                )
                 if outcome in {"added", "superseded", "contested"}:
                     await self._link(saved.id)
             await store.update(
@@ -1726,7 +1766,8 @@ class ContextDB:
 
         Checks, in order: (1) no rows for the user in any lifecycle state;
         (2) every id from the latest FORGET deletion set is gone from the
-        table; (3) no deleted id remains searchable in the vector index.
+        table; (3) no deleted id remains searchable in the vector index;
+        (4) no graph still holds an edge or entity attribute source for one.
         """
         await self._ensure_init()
         store = self._require_store()
@@ -1748,6 +1789,10 @@ class ContextDB:
             residue = set(deleted_ids) & await store.index_ids()
             if residue:
                 return False
+            for graph in self._graphs.values():
+                graph_residue = getattr(graph, "residue", None)
+                if graph_residue is not None and await graph_residue(deleted_ids):
+                    return False
         return True
 
     async def stats(self) -> dict[str, Any]:

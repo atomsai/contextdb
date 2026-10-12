@@ -126,7 +126,7 @@ This gives the agent:
 - Persistent memory across sessions (not just current conversation)
 - Three memory types (factual, experiential, working)
 - Auto PII redaction
-- Sub-5ms p95 recall latency
+- Local recall with no model call on the read path
 - Multi-graph retrieval (semantic + temporal + causal + entity)
 
 Update my existing LangChain agent to use ContextDBMemory and add logic to store factual vs experiential memories based on conversation content.

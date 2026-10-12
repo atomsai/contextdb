@@ -82,3 +82,15 @@ async def test_retrieval_ranks_store_references_but_returns_detached_items() -> 
     assert results[0].item is not source
     results[0].item.metadata["nested"].append("caller")
     assert source.metadata == {"nested": ["source"]}
+
+
+def test_identifier_tokens_keep_codes_and_drop_words() -> None:
+    from contextdb.dynamics.retrieval import identifier_tokens
+
+    assert identifier_tokens("Refund ORD-48213, SKU AB-100, and order 4419 today") == [
+        "ord-48213",
+        "ab-100",
+        "4419",
+    ]
+    assert identifier_tokens("which order was refunded for the [EMAIL] customer") == []
+    assert identifier_tokens("party of 4 at 7") == []

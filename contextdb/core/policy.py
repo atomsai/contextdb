@@ -53,10 +53,12 @@ class TrustPolicy(BaseModel):
         ge=-1.0,
         le=1.0,
         description=(
-            "Minimum cosine for a recall hit. -1 disables the floor (safe "
-            "default for small stores / mock embedders). With a production "
-            "embedder, 0.15–0.25 is the right band — below that, top-1 "
-            "similarity is a guess, not a memory."
+            "Minimum cosine for a recall hit. -1 disables the floor. Cosine "
+            "ranges are embedder-specific: multilingual-e5 models score almost "
+            "everything between 0.7 and 1.0, so no fixed band works across "
+            "embedders. Calibrate on labelled examples from your own data. A "
+            "floor cannot tell whether a memory answers a request; pass the "
+            "entity and attribute an action needs to recall_for_action instead."
         ),
     )
     # Unknown (non-vocabulary) slots cannot gate actions via the

@@ -27,7 +27,7 @@ from contextdb.core.models import (
     PIIAnnotation,
     RetentionPolicy,
 )
-from contextdb.store.base import BaseStore
+from contextdb.store.base import BaseStore, like_pattern
 from contextdb.store.vector_index import VectorIndex, get_vector_index
 
 SCHEMA = """
@@ -906,6 +906,28 @@ class SQLiteStore(BaseStore):
             "ORDER BY created_at DESC LIMIT ? OFFSET ?",
             params,
         )
+        rows = await cursor.fetchall()
+        return [_row_to_item(dict(row)) for row in rows]
+
+    async def search_text(
+        self,
+        token: str,
+        user_id: str | None = None,
+        limit: int = 20,
+    ) -> list[MemoryItem]:
+        clauses = ["status = ?", "LOWER(content) LIKE ? ESCAPE '!'"]
+        params: list[Any] = [MemoryStatus.ACTIVE.value, like_pattern(token)]
+        scope_sql, scope_params = self._scope_sql(user_id)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
+        params.append(limit)
+        sql = (
+            f"SELECT * FROM memories WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at DESC LIMIT ?"
+        )
+        conn = self._require_conn()
+        cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         return [_row_to_item(dict(row)) for row in rows]
 

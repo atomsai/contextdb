@@ -1,8 +1,12 @@
 """Regex-based PII detection, redaction, and encryption.
 
 Covers the common categories (email, phone, SSN, credit card) with well-known
-patterns. Name and address detection is heuristic here; richer recognizers
-can be plugged in later (spaCy NER, Presidio, etc.).
+patterns. Street addresses and names are opt-in
+(``detect_names_and_addresses=True``) because redacting them also hides them
+from the agent. Both are precision-first: an address needs a house number, a
+capitalized street name, and a street suffix, and a name needs a cue such as
+"my name is". Richer recognizers can be plugged in later (spaCy NER,
+Presidio, etc.).
 
 Offsets in returned :class:`PIIAnnotation` objects index the **original**
 content, which lets callers redact from the tail forward without corrupting
@@ -62,6 +66,33 @@ _PATTERNS: list[tuple[PIIType, re.Pattern[str]]] = [
 ]
 
 
+# Opt-in: a capture group, when present, is the span to redact (the cue stays).
+_NAME_AND_ADDRESS_PATTERNS: list[tuple[PIIType, re.Pattern[str]]] = [
+    (
+        PIIType.ADDRESS,
+        re.compile(
+            r"\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,3}"
+            r"(?:Street|St|Avenue|Ave|Road|Rd|Lane|Ln|Boulevard|Blvd|Drive|Dr|"
+            r"Court|Ct|Way|Place|Pl|Terrace|Parkway)\b\.?"
+        ),
+    ),
+    (
+        PIIType.NAME,
+        re.compile(
+            r"(?i:\bmy name is|\bcall me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})"
+            r"|(?i:\bthis is)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)"
+        ),
+    ),
+]
+
+
+def _span(match: re.Match[str]) -> tuple[int, int]:
+    for group in range(1, (match.re.groups or 0) + 1):
+        if match.group(group) is not None:
+            return match.start(group), match.end(group)
+    return match.start(), match.end()
+
+
 def _derive_fernet_key(raw: str) -> bytes:
     """Derive a 32-byte urlsafe-base64 Fernet key from any string.
 
@@ -81,8 +112,12 @@ class PIIDetector:
         self,
         action: PIIAction = "redact",
         encryption_key: str | None = None,
+        detect_names_and_addresses: bool = False,
     ) -> None:
         self.action: PIIAction = action
+        self._patterns = _PATTERNS + (
+            _NAME_AND_ADDRESS_PATTERNS if detect_names_and_addresses else []
+        )
         self._fernet: Fernet | None = None
         if action == "encrypt":
             key = encryption_key or os.environ.get("CONTEXTDB_PII_KEY")
@@ -99,13 +134,13 @@ class PIIDetector:
         """Return non-overlapping PII spans sorted by start offset."""
         found: list[PIIAnnotation] = []
         taken: list[tuple[int, int]] = []
-        for pii_type, pattern in _PATTERNS:
+        for pii_type, pattern in self._patterns:
             for match in pattern.finditer(text):
-                start, end = match.start(), match.end()
+                start, end = _span(match)
                 if any(_overlaps(start, end, s, e) for s, e in taken):
                     continue
                 taken.append((start, end))
-                original = match.group()
+                original = text[start:end]
                 if self._fernet is not None:
                     stored_original = self._fernet.encrypt(original.encode("utf-8")).decode(
                         "ascii"

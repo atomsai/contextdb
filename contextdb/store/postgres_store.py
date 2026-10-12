@@ -32,7 +32,7 @@ from contextdb.core.models import (
     MemoryType,
     _detached_memory_copy,
 )
-from contextdb.store.base import BaseStore
+from contextdb.store.base import BaseStore, like_pattern
 from contextdb.store.pg_sql import split_script, translate_sqlite_sql
 from contextdb.store.sqlite_store import (
     _BUMP_REVISION_SQL,
@@ -1052,6 +1052,26 @@ class PostgresStore(BaseStore):
             f"SELECT * FROM memories {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             params,
         )
+        return [_row_to_item(_normalize_row(row)) for row in rows]
+
+    async def search_text(
+        self,
+        token: str,
+        user_id: str | None = None,
+        limit: int = 20,
+    ) -> list[MemoryItem]:
+        clauses = ["status = ?", "LOWER(content) LIKE ? ESCAPE '!'"]
+        params: list[Any] = [MemoryStatus.ACTIVE.value, like_pattern(token)]
+        scope_sql, scope_params = self._scope_sql(user_id)
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
+        params.append(limit)
+        sql = (
+            f"SELECT * FROM memories WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at DESC LIMIT ?"
+        )
+        rows = await self._fetch(sql, params)
         return [_row_to_item(_normalize_row(row)) for row in rows]
 
     async def list_by_slot(

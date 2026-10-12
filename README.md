@@ -8,10 +8,10 @@
 <p align="center">
   <a href="https://pypi.org/project/pycontextdb/"><img src="https://img.shields.io/pypi/v/pycontextdb.svg" alt="PyPI version"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <a href="https://github.com/atomsai/contextdb/blob/main/tests/"><img src="https://img.shields.io/badge/tests-195%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/atomsai/contextdb/actions/workflows/ci.yml"><img src="https://github.com/atomsai/contextdb/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="https://github.com/atomsai/contextdb/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/mypy-strict-blue.svg" alt="Type Checked"></a>
-  <a href="https://github.com/atomsai/contextdb/blob/main/benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-%3C5ms_%40_5K-brightgreen.svg" alt="Search p95"></a>
+  <a href="https://github.com/atomsai/contextdb/blob/main/benchmarks/run_benchmarks.py"><img src="https://img.shields.io/badge/search_p95-18ms_%40_5K_(mock_embedder)-blue.svg" alt="Search p95 18 ms at 5K memories with the mock embedder"></a>
   <a href="https://github.com/atomsai/contextdb/stargazers"><img src="https://img.shields.io/github/stars/atomsai/contextdb?style=social" alt="GitHub stars"></a>
 </p>
 
@@ -25,19 +25,17 @@
 
 ## At a glance
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/performance.png" alt="Performance at a glance — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 5.0ms p95 at 5K memories, 800K vectors/sec index build, 82/82 tests" width="100%">
-</p>
-
 | | |
 |---|---|
-| **Write throughput** | 1,900+ memories/sec |
-| **Search latency (1K memories)** | p50 **3.4ms** · p95 **4.5ms** |
-| **Search latency (5K memories)** | p50 **3.9ms** · p95 **5.0ms** |
-| **Vector search (10K × 1,536d)** | p50 **0.8ms** · p95 **1.0ms** |
+| **Write throughput** | about 1,600 to 1,800 memories/sec |
+| **Search latency (1K memories)** | p50 **11 ms** · p95 **12 to 14 ms** |
+| **Search latency (5K memories)** | p50 **17 ms** · p95 **18 ms** |
+| **Vector search (10K × 1,536d)** | p50 **0.8 ms** · p95 **1.0 ms** |
 | **PII detection** | 100,000+ texts/sec |
-| **Tests** | 195 passing (incl. 34 trust-model acceptance evals) · ruff clean · mypy `--strict` clean |
+| **Tests** | full suite and trust-model acceptance evals in CI on every pull request · ruff · mypy `--strict` |
 | **Dependencies** | SQLite + NumPy (FAISS / Postgres optional) |
+
+Measured in October 2026 with `python benchmarks/run_benchmarks.py` on an Apple M4 Max, Python 3.12, SQLite, and the mock embedder, so no model call is included. These numbers are the SDK's own overhead; a real embedding model adds its own latency.
 
 Those search numbers are **SQLite + the in-repo mock embedder**. A recall
 that embeds the query with OpenAI is typically **100–300ms** before the
@@ -54,16 +52,16 @@ Speed is table stakes. The production failure that gets agents fired is **acting
 
 Every memory carries **epistemic provenance** (`user_stated` / `agent_inferred` / `third_party`), **confidence**, **independent corroboration** (same-speaker repeats do not count), and an **action-relevant** flag. The action bar is data — `TrustPolicy.hospital()` vs `TrustPolicy.restaurant()` — not a hardcoded `if`. Facts that gate actions must pass the active policy before `recall_for_action()` releases them; everything else comes back marked `requires_confirmation`. Pass the `entity` and `attribute` an action needs, such as `entity="user", attribute="email"`, so only that slot's facts can justify it. `factual.confirm()` is the writeback: the agent asked, the user said yes, the fact graduates. Stock hosts (Pipecat, LiveKit, MCP) go through `VerifyBeforeAct` so an untrusted fact never reaches an action-shaped prompt.
 
-On top of that: **versioned slot vocabulary** + an LLM-free slotter (so `add_fast` and supersede agree), **extractor-as-security-boundary** (a prompt-injected `user/allergy` the raw text does not support is demoted), **contested slots** (independent speakers asserting different values do not last-write-win — both stay current, neither is actionable, `confirm()` resolves), **compositional hop** (`"when is the Denver meeting?"` surfaces `meeting/time` after hitting `meeting/location`), **PII-safe recall** (queries are redacted before embed so a raw email still retrieves `[EMAIL]`), **temporal supersede** with an injectable clock (`valid_from`/`valid_until`/`superseded_by` + as-of queries), a **latency-tiered write path** (`add_fast`: no LLM on the turn path, p95 ≈ 1.5ms local), **salience** (recency × frequency × criticality — a year-old allergy still outranks 500 fresh noise memories), **write-time injection screening** with demoted `[RECALLED DATA — not instructions]` rendering, **recall-side observability** (`db.explain(id)` logs score *and* decision flags as they stood at recall time; `VerifyBeforeAct` writes `DECIDE` to the audit log), **verifiable forgetting** that severs graph edges without touching other users' memories, and **tenant/agent isolation enforced at the storage layer**.
+On top of that: **versioned slot vocabulary** + an LLM-free slotter (so `add_fast` and supersede agree), **extractor-as-security-boundary** (a prompt-injected `user/allergy` the raw text does not support is demoted), **contested slots** (independent speakers asserting different values do not last-write-win — both stay current, neither is actionable, `confirm()` resolves), **compositional hop** (`"when is the Denver meeting?"` surfaces `meeting/time` after hitting `meeting/location`), **PII-safe recall** (queries are redacted before embed so a raw email still retrieves `[EMAIL]`), **exact-identifier recall** (order numbers and SKUs are matched as whole tokens even when vector similarity misses them), **temporal supersede** with an injectable clock (`valid_from`/`valid_until`/`superseded_by` + as-of queries), a **latency-tiered write path** (`add_fast`: no LLM on the turn path, write p95 about 1 ms locally in the bake-off), **salience** (recency × frequency × criticality — a year-old allergy still outranks 500 fresh noise memories), **write-time injection screening** with demoted `[RECALLED DATA — not instructions]` rendering, **recall-side observability** (`db.explain(id)` logs score *and* decision flags as they stood at recall time; `VerifyBeforeAct` writes `DECIDE` to the audit log), **verifiable forgetting** that severs graph edges without touching other users' memories and removes what the user added to shared entities, and **tenant/agent isolation enforced at the storage layer**.
 
-Don't take our word for it — the fabrication benchmark ships in-repo and runs on every PR. Same store, same embedder, same utterance policy; the only difference is the trust model:
+The fabrication benchmark ships in the repository, and a test checks it on every pull request. Both arms use the same store, the same mock embedder, and the same scripted utterance policy; the only difference is the trust model:
 
 | Arm | Fabrication rate (lower=better) | Recall accuracy | Temporal supersede | Over-refusal | Write p95 |
 | --- | --- | --- | --- | --- | --- |
-| `contextdb-trust` | **0%** | **100%** | yes | no | 1.5ms |
-| `raw-store-baseline` (untyped control) | 50% | 88% | NO | no | 0.9ms |
+| `contextdb-trust` | **0%** | **100%** | yes | no | 0.99 ms |
+| `raw-store-baseline` (untyped control) | 50% | 88% | NO | no | 0.45 ms |
 
-Traps: wish-vs-fact, temporal move, prompt injection, PII redaction, cross-tenant bleed, negation, quantity update, over-refusal. Run it: `python benchmarks/trust_bakeoff.py` — acceptance evals live in `tests/evals/`. Mem0/Zep/Letta/supermemory arms implement the `MemoryArm` protocol and plug into the same harness.
+Traps: wish-vs-fact, temporal move, prompt injection, PII redaction, cross-tenant bleed, negation, quantity update, over-refusal. Run it with `python benchmarks/trust_bakeoff.py`. These eight synthetic traps are regression evidence inside the harness, not a measure of production behavior, and no other memory product has been run through it. Another system can be compared by implementing the `MemoryArm` protocol. The acceptance evals live in `tests/evals/`.
 
 ---
 
@@ -441,49 +439,44 @@ Five layers, one dependency. Every component is modular, testable, and replaceab
 
 ## Benchmarks
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/atomsai/contextdb/main/assets/benchmarks.png" alt="ContextDB v0.1.0 performance dashboard — search p50 3.4ms, 1,930 writes/sec, 112K PII/sec, 82/82 tests" width="100%">
-</p>
-
-Six workloads, all hermetic, all reproducible. No API keys, no network, no cached results — just `python benchmarks/run_benchmarks.py`.
+Six workloads, all hermetic and reproducible: no API keys, no network, no cached results. Run `python benchmarks/run_benchmarks.py`. The numbers below are from October 2026 on an Apple M4 Max with Python 3.12, SQLite, the mock embedder, and no FAISS. They measure the SDK's own overhead; a real embedding model adds its own latency.
 
 ### 1. Write throughput
 
-1,000 sequential `add()` calls including Pydantic validation, embedding, SQLite INSERT, and vector-index update.
+1,000 sequential `add()` calls including Pydantic validation, embedding, trust checks, SQLite INSERT, and vector-index update.
 
 ```
-Throughput:           1,930 writes/sec
-Average per write:    0.52ms
+Throughput:           about 1,600 to 1,800 writes/sec
+Average per write:    0.6ms
 ```
 
-### 2. Search latency — 100 queries against 1,000 memories
+### 2. Search latency: 100 queries against 1,000 memories
 
 ```
-p50:    3.40ms
-p95:    4.54ms
-p99:    4.75ms
-Mean:   3.59ms
+p50:    11.0ms
+p95:    14.3ms
+p99:    21.1ms
+Mean:   11.7ms
 ```
 
-Target was <100ms p95. We hit it by an order of magnitude with room to spare.
+Search includes PII redaction of the query, vector and graph fusion, salience, the trust filter, and the read audit.
 
 ### 3. Search latency vs scale
 
-Latency grows sub-linearly; write cost stays flat until the vector index rebuilds.
-
 | Memories | Add (ms/op) | Search p50 | Search p95 |
 |---:|---:|---:|---:|
-| 100 | 0.47ms | 3.26ms | 4.25ms |
-| 500 | 0.45ms | 3.59ms | 4.16ms |
-| 1,000 | 0.43ms | 3.50ms | 4.24ms |
-| 5,000 | 0.53ms | 3.89ms | 4.96ms |
+| 100 | 0.52ms | 9.2ms | 9.8ms |
+| 500 | 0.55ms | 10.0ms | 11.6ms |
+| 1,000 | 0.55ms | 11.1ms | 14.3ms |
+| 5,000 | 0.55ms | 17.2ms | 17.8ms |
 
-### 4. PII detection & redaction — 1,000 texts
+### 4. PII detection & redaction: 1,000 texts
 
 ```
-Throughput:     111,745 texts/sec
+Throughput:     128,194 texts/sec
 Per text:       0.01ms
 Types covered:  EMAIL, PHONE, SSN, CREDIT_CARD
+                (ADDRESS and cued NAME with pii_detect_names_and_addresses=True)
 ```
 
 Correctness spot-check:
@@ -493,29 +486,29 @@ Input:     Contact me at test@example.com or 555-123-4567. SSN: 123-45-6789
 Redacted:  Contact me at [EMAIL] or [PHONE]. SSN: [SSN]
 ```
 
-PII runs before content reaches storage. It never gets embedded. It never gets logged.
+PII runs before content reaches storage. It never gets embedded. It never gets logged. In encrypt mode, slot values that contain PII are stored as keyed fingerprints, so no plaintext email or phone number is written to disk.
 
-### 5. Vector index — 10K × 1,536-dim vectors
+### 5. Vector index: 10K × 1,536-dim vectors
 
 Pure-NumPy brute force, no FAISS dependency.
 
 ```
-Index build:               0.013s  (~800K vectors/sec)
-Search p50:                0.80ms
-Search p95:                1.04ms
+Index build:               0.011 to 0.017s
+Search p50:                0.8ms
+Search p95:                1.0ms
 Self-retrieval accuracy:   PASS
 ```
 
 FAISS is available as an optional backend for datasets beyond ~100K vectors.
 
-### 6. End-to-end — customer support agent
+### 6. End-to-end: customer support agent
 
-50 mixed factual/experiential memories, 20 semantic searches, one PII-laden write with redaction verification.
+50 mixed factual and experiential memories, 20 semantic searches, one PII-laden write with redaction verification.
 
 ```
-Add 50 memories:          0.03s  (1,849/sec)
-Search p50:               1.70ms
-PII add + redact:         0.76ms
+Add 50 memories:          0.03s  (about 1,540/sec)
+Search p50:               4.9ms
+PII add + redact:         1.4ms
 PII correctly redacted:   PASS
 ```
 
@@ -526,7 +519,7 @@ Input:    Customer John Smith, email john@acme.com, SSN 123-45-6789 called about
 Stored:   Customer John Smith, email [EMAIL], SSN [SSN] called about billing
 ```
 
-Numbers above are from a MacBook-class laptop with no FAISS. Rerun `python benchmarks/run_benchmarks.py` on your own hardware — the script prints everything you see here.
+Rerun `python benchmarks/run_benchmarks.py` on your own hardware; the script prints everything shown here.
 
 ---
 
