@@ -5,17 +5,18 @@ Version 2.0 (see [LICENSE](LICENSE)). That license covers the code. It
 does not cover the name.
 
 Releases through `v0.4.7`, and the code published through `2554dae`, are
-Apache-2.0 with no revenue condition. Those grants are permanent, including
+Apache-2.0 with no profile cap. Those grants are permanent, including
 for forks already taken. There is no license key and no phone-home check.
 
-## Revenue line from 1.0
+## Profile line from 1.0
 
 `pycontextdb` 1.0 is a fresh release. It does not relicense 0.4.7 or any
 earlier package. Production use of 1.0 and later requires a commercial
-license from Atoms AI when the user, together with the entities it controls,
-had gross revenue of USD 10 million or more in the previous fiscal year.
-Below that line, use stays free, including commercial use and self-hosting.
-The free grant does not depend on a license key inside the program.
+license from Atoms AI above 10,000 active profiles in a month. An active
+profile is one person whose agent used ContextDB that month, counted once.
+At or below that line, use stays free, including commercial use and
+self-hosting. The free grant does not depend on a license key inside the
+program, and it does not depend on revenue.
 
 The 1.0 `LICENSE` file will carry this split, after legal review of the
 text. Until that tag exists, Apache-2.0 is the grant for the code in this
@@ -54,9 +55,8 @@ uses.
 
 If your company wants to use the ContextDB name or logo for a hosted offering,
 or wants a supported OEM arrangement, Cloud service, support, or a trademark
-agreement, contact **contextdb@atomsai.com**. Organizations at or above the
-revenue line should use the same address for the commercial license that
-applies to 1.0 and later.
+agreement, contact **contextdb@atomsai.com**. Organizations above 10,000 active profiles in a month should use the
+same address for the commercial license that applies to 1.0 and later.
 
 ## Attribution (optional)
 
