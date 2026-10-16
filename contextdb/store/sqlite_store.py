@@ -832,13 +832,36 @@ class SQLiteStore(BaseStore):
         # authoritative SQL scope, so out-of-scope vectors never compete
         # for the candidate budget (and a large foreign tenant cannot
         # starve an in-scope hit).
-        allow_sql = (
-            "SELECT id FROM memories WHERE status = 'ACTIVE' AND embedding IS NOT NULL"
+        as_of_filter = (
+            filters.get("as_of")
+            if filters and isinstance(filters.get("as_of"), datetime)
+            else None
         )
-        if scope_sql:
-            allow_sql += f" AND {scope_sql}"
-        cursor = await conn.execute(allow_sql, scope_params)
-        candidate_ids = {row["id"] for row in await cursor.fetchall()}
+        if as_of_filter is not None:
+            allow_sql = (
+                "SELECT id, valid_from, valid_until FROM memories "
+                "WHERE status = 'ACTIVE' AND embedding IS NOT NULL"
+            )
+            if scope_sql:
+                allow_sql += f" AND {scope_sql}"
+            cursor = await conn.execute(allow_sql, scope_params)
+            candidate_ids = set()
+            for row in await cursor.fetchall():
+                vf = _opt_datetime(row["valid_from"])
+                vu = _opt_datetime(row["valid_until"])
+                if vf is not None and as_of_filter < vf:
+                    continue
+                if vu is not None and as_of_filter >= vu:
+                    continue
+                candidate_ids.add(row["id"])
+        else:
+            allow_sql = (
+                "SELECT id FROM memories WHERE status = 'ACTIVE' AND embedding IS NOT NULL"
+            )
+            if scope_sql:
+                allow_sql += f" AND {scope_sql}"
+            cursor = await conn.execute(allow_sql, scope_params)
+            candidate_ids = {row["id"] for row in await cursor.fetchall()}
         if not candidate_ids:
             return []
         # Fetch extra only to allow for post-filter culling.
@@ -1135,5 +1158,7 @@ def _passes_filters(item: MemoryItem, filters: dict[str, object]) -> bool:
         if key == "status" and item.status.value != value:
             return False
         if key == "source" and item.source != value:
+            return False
+        if key == "as_of" and isinstance(value, datetime) and not item.is_valid_at(value):
             return False
     return True

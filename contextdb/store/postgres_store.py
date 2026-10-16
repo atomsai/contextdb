@@ -1001,11 +1001,27 @@ class PostgresStore(BaseStore):
         )
         if scoped_ids is not None and not scoped_ids:
             return []
-        candidate_ids = (
-            None
-            if scoped_ids is None or len(scoped_ids) == len(self._index_items)
-            else scoped_ids
+        as_of_filter = (
+            filters.get("as_of")
+            if filters and isinstance(filters.get("as_of"), datetime)
+            else None
         )
+        if as_of_filter is not None:
+            pool_ids = scoped_ids if scoped_ids is not None else self._index_items.keys()
+            candidate_ids = {
+                mid
+                for mid in pool_ids
+                if (it := self._index_items.get(mid)) is not None
+                and it.is_valid_at(as_of_filter)
+            }
+            if not candidate_ids:
+                return []
+        else:
+            candidate_ids = (
+                None
+                if scoped_ids is None or len(scoped_ids) == len(self._index_items)
+                else scoped_ids
+            )
         # Fetch extra only to allow for post-filter culling.
         raw = index.search(
             query,

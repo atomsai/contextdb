@@ -543,6 +543,8 @@ class ContextDB:
             await self._embedder.embed_documents([embed_text])
         )[0]
         now = self.clock()
+        if event_time is not None and event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=timezone.utc)
         item = MemoryItem(
             content=processed,
             embedding=embedding,
@@ -561,7 +563,7 @@ class ContextDB:
             ),
             entity_key=entity_key,
             attribute_key=attribute_key,
-            valid_from=now,
+            valid_from=event_time,
             pii_shadow=shadow,
             user_id=uid,
             corroborated_by=[speaker_id(uid, self.session_id, self.agent_id)],
@@ -583,6 +585,8 @@ class ContextDB:
                     user_id=uid,
                 )
             else:
+                if item.valid_from is None:
+                    item.valid_from = now
                 stored = await store.add(item)
                 outcome = "added"
                 if self._audit is not None:
@@ -1112,6 +1116,8 @@ class ContextDB:
         assert self._embedder is not None
         assert self._retrieval is not None
         assert self._pii is not None
+        if as_of is not None and as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
         moment = as_of or self.clock()
         # Embed the redacted query so a lookup containing a real email
         # still retrieves '[EMAIL]' — and so raw PII never enters the
@@ -1123,7 +1129,11 @@ class ContextDB:
                 processed_query
             )
             scored = await self._retrieval.search_scored(
-                processed_query, query_embedding, top_k=top_k * 3, user_id=uid
+                processed_query,
+                query_embedding,
+                top_k=top_k * 3,
+                user_id=uid,
+                as_of=as_of,
             )
         except Exception as exc:  # noqa: BLE001
             if not self.config.lexical_on_embed_failure:
@@ -1246,6 +1256,7 @@ class ContextDB:
         metadata: dict[str, Any] | None = None,
         entity_mentions: list[str] | None = None,
         *,
+        event_time: datetime | None = None,
         user_id: str | None = None,
     ) -> MemoryItem:
         """Realtime write path: append raw + embed inline, NEVER call an LLM.
@@ -1273,18 +1284,21 @@ class ContextDB:
             await self._embedder.embed_documents([embed_text])
         )[0]
         now = self.clock()
+        if event_time is not None and event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=timezone.utc)
+        effective_time = event_time or now
         item = MemoryItem(
             content=processed,
             embedding=embedding,
             memory_type=memory_type,
             metadata=metadata or {},
-            event_time=now,
+            event_time=effective_time,
             pii_annotations=pii_annotations,
             entity_mentions=entity_mentions or [],
             epistemic_source="user_stated",
             confidence=0.5,
             action_relevant=infer_action_relevant(processed),
-            valid_from=now,
+            valid_from=event_time,
             pending_consolidation=True,
             pii_shadow=shadow,
             user_id=uid,
@@ -1301,6 +1315,8 @@ class ContextDB:
                     user_id=uid,
                 )
             else:
+                if item.valid_from is None:
+                    item.valid_from = now
                 stored = await store.add(item)
                 if self._audit is not None:
                     await self._audit.log(
@@ -2020,13 +2036,29 @@ class ContextDB:
                 stored.append(await self.add_fast(raw, user_id=user_id))
                 continue
             content = str(raw["content"])
+            raw_et = raw.get("event_time")
+            parsed_et: datetime | None = None
+            if isinstance(raw_et, datetime):
+                parsed_et = raw_et
+            elif isinstance(raw_et, str) and raw_et.strip():
+                iso = raw_et.strip()
+                if iso.endswith("Z"):
+                    iso = iso[:-1] + "+00:00"
+                parsed_et = datetime.fromisoformat(iso)
             source = raw.get("source") or raw.get("epistemic_source")
             if source is None:
-                stored.append(await self.add_fast(content, user_id=user_id))
+                stored.append(
+                    await self.add_fast(
+                        content,
+                        event_time=parsed_et,
+                        user_id=user_id,
+                    )
+                )
                 continue
             stored.append(
                 await self.add(
                     content,
+                    event_time=parsed_et,
                     epistemic_source=source,
                     confidence=raw.get("confidence"),
                     action_relevant=raw.get("action_relevant"),

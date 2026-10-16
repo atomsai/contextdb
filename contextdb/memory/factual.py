@@ -50,6 +50,7 @@ class FactualMemory:
         action_relevant: bool | None = None,
         entity: str | None = None,
         attribute: str | None = None,
+        event_time: datetime | None = None,
         user_id: str | None = None,
     ) -> MemoryItem:
         """Store a fact.
@@ -65,6 +66,7 @@ class FactualMemory:
             content=content,
             memory_type=MemoryType.FACTUAL,
             metadata=meta,
+            event_time=event_time,
             entity_mentions=entity_mentions,
             epistemic_source=source,
             confidence=confidence,
@@ -110,6 +112,7 @@ class FactualMemory:
         metadata: dict[str, Any] | None = None,
         entity_mentions: list[str] | None = None,
         *,
+        event_time: datetime | None = None,
         user_id: str | None = None,
     ) -> MemoryItem:
         """Realtime write path — never calls an LLM.
@@ -123,6 +126,7 @@ class FactualMemory:
             memory_type=MemoryType.FACTUAL,
             metadata=metadata,
             entity_mentions=entity_mentions,
+            event_time=event_time,
             user_id=self._user(user_id),
         )
 

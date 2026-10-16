@@ -14,7 +14,9 @@ heuristics below get ~80% of the signal for zero cost.
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -98,6 +100,45 @@ def identifier_tokens(text: str) -> list[str]:
     return tokens
 
 
+_WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./'-]*[A-Za-z0-9]|[A-Za-z0-9]{2,}")
+_QUERY_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "that", "this", "with", "from", "have", "has", "had",
+        "what", "when", "where", "which", "who", "whose", "how", "why", "did", "does",
+        "was", "were", "are", "you", "your", "yours", "our", "ours", "their", "theirs",
+        "about", "into", "over", "after", "before", "during", "across", "between",
+        "through", "can", "could", "would", "should", "will", "many", "much", "some",
+        "any", "all", "both", "each", "other", "more", "most", "such", "only", "own",
+        "same", "so", "than", "too", "very", "just", "now", "then", "also", "been",
+        "being", "there", "here", "they", "them", "his", "her", "its", "not", "but",
+        "tell", "give", "list", "show", "please", "based", "according", "mentioned",
+    }
+)
+_MAX_KEYWORD_TOKENS = 8
+
+
+def keyword_tokens(text: str) -> list[str]:
+    """Up to eight salient non-stopword query tokens for BM25 lexical fusion."""
+    tokens: list[str] = []
+    for match in _WORD_TOKEN_RE.finditer(text):
+        token = match.group().strip("._'-/").casefold()
+        if len(token) < 2 or token in _QUERY_STOPWORDS:
+            continue
+        if len(token) == 2 and not any(c.isdigit() for c in token):
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    tokens.sort(
+        key=lambda t: (
+            any(c.isdigit() for c in t),
+            any(c in "-_./" for c in t),
+            len(t),
+        ),
+        reverse=True,
+    )
+    return tokens[:_MAX_KEYWORD_TOKENS]
+
+
 class RetrievalFuser:
     """Reciprocal Rank Fusion over per-graph candidate lists."""
 
@@ -167,11 +208,13 @@ class RetrievalEngine:
         query_embedding: list[float],
         top_k: int = 10,
         user_id: str | None = None,
+        *,
+        as_of: datetime | None = None,
     ) -> list[MemoryItem]:
         return [
             s.item
             for s in await self.search_scored(
-                query, query_embedding, top_k=top_k, user_id=user_id
+                query, query_embedding, top_k=top_k, user_id=user_id, as_of=as_of
             )
         ]
 
@@ -181,15 +224,20 @@ class RetrievalEngine:
         query_embedding: list[float],
         top_k: int = 10,
         user_id: str | None = None,
+        *,
+        as_of: datetime | None = None,
     ) -> list[ScoredMemory]:
         """RRF-fuse per-graph rankings, then multiply by salience."""
         weights = self.classifier.classify(query)
         seed_items = await self.store.search_by_embedding(
             query_embedding,
             top_k=top_k * 2,
+            filters=None if as_of is None else {"as_of": as_of},
             user_id=user_id,
             copy_items=False,
         )
+        if as_of is not None:
+            seed_items = [item for item in seed_items if item.is_valid_at(as_of)]
         semantic_ranking = [(item.id, 1.0 / (rank + 1)) for rank, item in enumerate(seed_items)]
         rankings: dict[str, list[tuple[str, float]]] = {"semantic": semantic_ranking}
 
@@ -210,14 +258,28 @@ class RetrievalEngine:
         tokens = identifier_tokens(query)
         if tokens:
             lexical_ranking, lexical_items = await self._lexical_ranking(
-                tokens, user_id, limit=max(top_k * 2, 10)
+                tokens, user_id, limit=max(top_k * 2, 10), as_of=as_of
             )
             if lexical_ranking:
                 rankings["lexical"] = lexical_ranking
                 weights = {**weights, "lexical": max(weights.values(), default=1.0)}
 
+        bm25_items: dict[str, MemoryItem] = {}
+        kw_tokens = keyword_tokens(query)
+        if kw_tokens and hasattr(self.store, "search_text"):
+            bm25_ranking, bm25_items = await self._bm25_ranking(
+                kw_tokens,
+                seed_items,
+                user_id,
+                limit=max(top_k * 2, 20),
+                as_of=as_of,
+            )
+            if bm25_ranking:
+                rankings["bm25"] = bm25_ranking
+                weights = {**weights, "bm25": weights.get("semantic", 1.0) * 0.75}
+
         fused = self.fuser.fuse(rankings, weights)
-        now = self.clock()
+        now = as_of or self.clock()
         seed_cosine = {
             item.id: _cosine(query_embedding, item.embedding) if item.embedding else 0.0
             for item in seed_items
@@ -242,18 +304,27 @@ class RetrievalEngine:
         else:
             scored = []
             for mid, rrf_score in fused:
-                item = seed_by_id.get(mid) or lexical_items.get(mid)
+                item = seed_by_id.get(mid) or lexical_items.get(mid) or bm25_items.get(mid)
                 if item is None:
                     item = await self.store.get_raw(mid)
                 if item is None:
                     continue
+                if as_of is not None and not item.is_valid_at(as_of):
+                    continue
+                cos = seed_cosine.get(mid)
+                if cos is None:
+                    cos = (
+                        _cosine(query_embedding, item.embedding)
+                        if item.embedding and query_embedding
+                        else 0.0
+                    )
                 scored.append(
                     self._score(
                         item,
                         rrf_score,
                         per_graph_ranks,
                         now,
-                        seed_cosine.get(mid, 0.0),
+                        cos,
                     )
                 )
             scored.sort(key=lambda s: s.final_score, reverse=True)
@@ -267,6 +338,8 @@ class RetrievalEngine:
         tokens: list[str],
         user_id: str | None,
         limit: int,
+        *,
+        as_of: datetime | None = None,
     ) -> tuple[list[tuple[str, float]], dict[str, MemoryItem]]:
         """Memories containing each identifier as a whole token, most matches first."""
         matches: dict[str, int] = {}
@@ -276,11 +349,72 @@ class RetrievalEngine:
                 rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])", re.IGNORECASE
             )
             for item in await self.store.search_text(token, user_id=user_id, limit=limit):
+                if as_of is not None and not item.is_valid_at(as_of):
+                    continue
                 if whole.search(item.content):
                     matches[item.id] = matches.get(item.id, 0) + 1
                     items[item.id] = item
         ranked = sorted(matches.items(), key=lambda kv: kv[1], reverse=True)
         return [(mid, float(count)) for mid, count in ranked], items
+
+    async def _bm25_ranking(
+        self,
+        tokens: list[str],
+        seed_items: list[MemoryItem],
+        user_id: str | None,
+        limit: int,
+        *,
+        as_of: datetime | None = None,
+    ) -> tuple[list[tuple[str, float]], dict[str, MemoryItem]]:
+        """BM25 keyword ranking over store text matches and semantic seeds."""
+        items: dict[str, MemoryItem] = {}
+        for item in seed_items:
+            if as_of is None or item.is_valid_at(as_of):
+                items[item.id] = item
+        per_token_limit = max(limit, 25)
+        for token in tokens:
+            for item in await self.store.search_text(token, user_id=user_id, limit=per_token_limit):
+                if as_of is not None and not item.is_valid_at(as_of):
+                    continue
+                items[item.id] = item
+        if not items:
+            return [], {}
+        docs: dict[str, Counter[str]] = {}
+        doc_lens: dict[str, int] = {}
+        df: Counter[str] = Counter()
+        for mid, item in items.items():
+            words = [
+                m.group().strip("._'-/").casefold()
+                for m in _WORD_TOKEN_RE.finditer(item.content)
+            ]
+            counts = Counter(words)
+            docs[mid] = counts
+            doc_lens[mid] = max(1, len(words))
+            for token in tokens:
+                if counts[token] > 0 or token in item.content.casefold():
+                    df[token] += 1
+        n_docs = max(len(items) * 3, 25)
+        avgdl = sum(doc_lens.values()) / max(1, len(doc_lens))
+        scored: list[tuple[float, datetime, str]] = []
+        for mid, item in items.items():
+            counts = docs[mid]
+            dl = doc_lens[mid]
+            lowered = item.content.casefold()
+            score = 0.0
+            for token in tokens:
+                tf = counts[token]
+                if tf == 0 and token in lowered:
+                    tf = 1
+                if tf == 0:
+                    continue
+                idf = math.log(1.0 + (n_docs - df[token] + 0.5) / (df[token] + 0.5))
+                score += idf * (tf * 2.2) / (tf + 1.2 * (1.0 - 0.75 + 0.75 * dl / avgdl))
+            if score > 0.0:
+                basis = item.event_time or item.valid_from or item.created_at
+                scored.append((score, basis, mid))
+        scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+        top = [(mid, s) for s, _basis, mid in scored[:limit]]
+        return top, {mid: items[mid] for mid, _ in top}
 
     def _score(
         self,

@@ -202,7 +202,7 @@ class TrustEngine:
             item.entity_key, item.attribute_key, user_id=user_id
         )
         async with lock:
-            now = self.clock()
+            now = item.valid_from or self.clock()
             item.valid_from = now
             return await self._write_locked(item, user_id, now, slot, replacing)
 

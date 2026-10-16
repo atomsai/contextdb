@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from contextdb.core.models import MemoryItem
@@ -94,3 +96,62 @@ def test_identifier_tokens_keep_codes_and_drop_words() -> None:
     ]
     assert identifier_tokens("which order was refunded for the [EMAIL] customer") == []
     assert identifier_tokens("party of 4 at 7") == []
+
+
+def test_keyword_tokens_extract_salient_terms_without_stopwords() -> None:
+    from contextdb.dynamics.retrieval import keyword_tokens
+
+    tokens = keyword_tokens(
+        "How did I integrate Flask-Login for session management before March 29?"
+    )
+    assert "29" in tokens
+    assert "flask-login" in tokens
+    assert "how" not in tokens
+    assert "for" not in tokens
+
+
+@pytest.mark.asyncio
+async def test_backdated_event_time_and_pre_truncation_as_of(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    import contextdb
+    from contextdb.core.config import ContextDBConfig
+
+    db = contextdb.init(
+        user_id="u-temporal",
+        config=ContextDBConfig(
+            storage_url=f"sqlite:///{tmp_path / 'temporal.db'}",
+            embedding_model="mock",
+            llm_model="mock",
+            llm_api_key="mock",
+            enable_auto_link=False,
+        ),
+    )
+    async with db:
+        t1 = datetime(2024, 3, 15, 12, 0, tzinfo=timezone.utc)
+        t2 = datetime(2024, 4, 25, 12, 0, tzinfo=timezone.utc)
+        await db.factual.add_many(
+            [
+                {
+                    "content": "First sprint ends on March 29 with 150 commits.",
+                    "source": "user_stated",
+                    "event_time": t1.isoformat(),
+                },
+                *[
+                    {
+                        "content": f"Later April update {i}: 165 commits merged into main.",
+                        "source": "user_stated",
+                        "event_time": t2.isoformat(),
+                    }
+                    for i in range(30)
+                ],
+            ]
+        )
+        early = await db.factual.recall(
+            "How many commits and when does the first sprint end?",
+            top_k=3,
+            as_of=datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc),
+        )
+        assert len(early) == 1
+        assert "March 29" in early[0].content
+        assert "150 commits" in early[0].content
