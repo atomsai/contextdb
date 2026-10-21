@@ -1074,6 +1074,27 @@ class PostgresStore(BaseStore):
         user_id: str | None = None,
         limit: int = 20,
     ) -> list[MemoryItem]:
+        if limit <= 0:
+            return []
+        if self._index_loaded:
+            needle = token.casefold()
+            scope = self._resolve_scope(user_id)
+            candidate_ids = (
+                self._index_items.keys()
+                if scope is None
+                else self._index_ids_by_user.get(scope, set())
+            )
+            matched: list[MemoryItem] = []
+            for memory_id in candidate_ids:
+                item = self._index_items.get(memory_id)
+                if item is None or item.status != MemoryStatus.ACTIVE:
+                    continue
+                if not self._item_scope_allows(item, user_id):
+                    continue
+                if needle in item.content.casefold():
+                    matched.append(item)
+            matched.sort(key=lambda m: m.created_at, reverse=True)
+            return [_detached_memory_copy(item) for item in matched[:limit]]
         clauses = ["status = ?", "LOWER(content) LIKE ? ESCAPE '!'"]
         params: list[Any] = [MemoryStatus.ACTIVE.value, like_pattern(token)]
         scope_sql, scope_params = self._scope_sql(user_id)
