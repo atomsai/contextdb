@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.4.8 — 2026-10-21
+
+- `factual.add()`, `add_fast()`, and `add_many()` accept optional `event_time`
+  and set `valid_from = event_time` (closing superseded slot occupants at
+  `valid_until = event_time`) so backdated writes carry their real validity
+  window.
+- `RetrievalEngine.search_scored()` applies `as_of` filtering in `SQLiteStore`
+  and `PostgresStore` before top-k truncation and computes salience decay
+  relative to `as_of`.
+- `RetrievalEngine.search_scored()` adds a general BM25 keyword ranking arm
+  (`_bm25_ranking`) fused via Reciprocal Rank Fusion alongside semantic and
+  graph rankings, while keeping `recall_for_action` relevance-floor bypass
+  restricted to digit-bearing `identifier_tokens`.
+- `render_recalled_context()` adds optional `include_timestamps` and
+  `chronological` ordering and marks `CONTESTED` memories.
+
 ## 0.4.7 — 2026-10-12
 
 - `forget_user` now removes what the user added to shared entities. Entity

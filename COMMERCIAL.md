@@ -4,13 +4,13 @@ The software in this repository is open source under the Apache License,
 Version 2.0 (see [LICENSE](LICENSE)). That license covers the code. It
 does not cover the name.
 
-Releases through `v0.4.7`, and the code published through `2554dae`, are
+Releases through `v0.4.8`, and the code published through `c84d78b`, are
 Apache-2.0 with no profile cap. Those grants are permanent, including
 for forks already taken. There is no license key and no phone-home check.
 
 ## Profile line from 1.0
 
-`pycontextdb` 1.0 is a fresh release. It does not relicense 0.4.7 or any
+`pycontextdb` 1.0 is a fresh release. It does not relicense 0.4.8 or any
 earlier package. Production use of 1.0 and later requires a commercial
 license from Atoms AI above 10,000 active profiles in a month. An active
 profile is one person whose agent used ContextDB that month, counted once.
@@ -48,7 +48,7 @@ You may not, without a commercial agreement with Atoms AI:
 
 ## Resale and commercial agreements
 
-For releases through `v0.4.7`, Apache-2.0 permits commercial use,
+For releases through `v0.4.8`, Apache-2.0 permits commercial use,
 modification, redistribution, embedding, and hosted use of the code,
 subject to its terms. No separate copyright license is required for those
 uses.

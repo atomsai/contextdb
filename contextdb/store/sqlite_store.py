@@ -832,11 +832,8 @@ class SQLiteStore(BaseStore):
         # authoritative SQL scope, so out-of-scope vectors never compete
         # for the candidate budget (and a large foreign tenant cannot
         # starve an in-scope hit).
-        as_of_filter = (
-            filters.get("as_of")
-            if filters and isinstance(filters.get("as_of"), datetime)
-            else None
-        )
+        raw_as_of = filters.get("as_of") if filters else None
+        as_of_filter = raw_as_of if isinstance(raw_as_of, datetime) else None
         if as_of_filter is not None:
             allow_sql = (
                 "SELECT id, valid_from, valid_until FROM memories "

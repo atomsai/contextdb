@@ -1001,11 +1001,9 @@ class PostgresStore(BaseStore):
         )
         if scoped_ids is not None and not scoped_ids:
             return []
-        as_of_filter = (
-            filters.get("as_of")
-            if filters and isinstance(filters.get("as_of"), datetime)
-            else None
-        )
+        raw_as_of = filters.get("as_of") if filters else None
+        as_of_filter = raw_as_of if isinstance(raw_as_of, datetime) else None
+        candidate_ids: set[str] | None
         if as_of_filter is not None:
             pool_ids = scoped_ids if scoped_ids is not None else self._index_items.keys()
             candidate_ids = {
