@@ -23,6 +23,15 @@ keywords = [
     "vector-database",
     "agent-memory",
     "trust",
+    "mcp",
+    "model-context-protocol",
+    "provenance",
+    "pii-redaction",
+    "sqlite",
+    "postgresql",
+    "pgvector",
+    "bm25",
+    "temporal-memory",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -74,10 +83,13 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/atomsai/contextdb"
-Documentation = "https://contextdb.dev"
+Homepage = "https://contextdb.ai"
+Documentation = "https://contextdb.ai/docs"
+"For AI Agents" = "https://contextdb.ai/for-agents"
+"MCP Connector" = "https://contextdb.ai/mcp"
 Repository = "https://github.com/atomsai/contextdb"
 Issues = "https://github.com/atomsai/contextdb/issues"
+Changelog = "https://github.com/atomsai/contextdb/blob/main/CHANGELOG.md"
 
 [project.scripts]
 contextdb = "contextdb.cli:main"

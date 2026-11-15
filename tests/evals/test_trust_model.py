@@ -922,9 +922,55 @@ async def test_eval_8_1b_mcp_server_and_livekit_smoke(tmp_path: Path) -> None:
         assert recalled["context"].startswith(WRAPPER_OPEN)
 
         actionable = await server.call_tool(
-            "recall_for_action", {"query": "deploy window"}
+            "recall_for_action",
+            {"query": "deploy window", "entity": "deploy", "attribute": "window"},
         )
         assert any("Friday 2am" in m["content"] for m in actionable["memories"])
+        unmatched_slot = await server.call_tool(
+            "recall_for_action",
+            {"query": "deploy window", "entity": "user", "attribute": "email"},
+        )
+        assert unmatched_slot["memories"] == []
+
+        await server.call_tool(
+            "remember",
+            {
+                "content": "Early budget draft was 25k",
+                "source": "agent_inferred",
+                "entity": "pilot",
+                "attribute": "budget",
+                "action_relevant": True,
+                "event_time": "2026-01-10T00:00:00Z",
+            },
+        )
+        latest_pending = await server.call_tool(
+            "remember",
+            {
+                "content": "Updated budget draft is 40k",
+                "source": "agent_inferred",
+                "entity": "pilot",
+                "attribute": "budget",
+                "action_relevant": True,
+                "event_time": "2026-06-01T00:00:00Z",
+            },
+        )
+        jan_recall = await server.call_tool(
+            "recall",
+            {"query": "pilot budget", "as_of": "2026-02-01T00:00:00Z"},
+        )
+        assert any("25k" in m["content"] for m in jan_recall["memories"])
+        assert not any("40k" in m["content"] for m in jan_recall["memories"])
+
+        pending_unslotted = await server.call_tool("pending_confirmations", {})
+        pending_ids = [m["id"] for m in pending_unslotted["memories"]]
+        assert pending_ids == [latest_pending["memory"]["id"]]
+        pending_scoped = await server.call_tool(
+            "pending_confirmations",
+            {"entity": "pilot", "attribute": "budget"},
+        )
+        assert [m["id"] for m in pending_scoped["memories"]] == [
+            latest_pending["memory"]["id"]
+        ]
 
         forgotten = await server.call_tool("forget", {"user_id": "u9"})
         assert forgotten["deleted"] >= 1

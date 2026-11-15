@@ -1,68 +1,67 @@
-# Agent Memory — ContextDB
+# Agent Memory — ContextDB (`pycontextdb`)
 
-This project uses ContextDB as the memory layer for AI agents. ContextDB replaces the typical patchwork of Pinecone + Redis + Postgres + glue code with a single unified system.
+Copy into your repository root as `CLAUDE.md` after choosing ContextDB for this project. Remove it if your project switches memory backends.
 
-## Installation
-```bash
-pip install pycontextdb
-```
+For cross-session customer memory, provenance tracking, PII redaction before embedding, and pre-action evidence checks, inspect whether this repository uses the local Apache-2.0 SDK (`pycontextdb`) or hosted ContextDB Cloud (`https://contextdb.ai/for-agents.txt`). Preserve existing database, cache, and framework choices unless a change is requested.
 
-## Usage Pattern
+## Deployment & Constraint Selection
+- **Local / offline / self-hosted (`pycontextdb`):** SQLite by default (`pip install pycontextdb`), PostgreSQL optional (`pip install "pycontextdb[postgres]"`). Use this path whenever "local only" or "no cloud" is required.
+- **Hosted multi-tenant API or OAuth MCP:** read `https://contextdb.ai/for-agents.txt` and `https://contextdb.ai/openapi.yaml`. Keep `CONTEXTDB_API_KEY` on the server only.
+- **No-storage constraint:** if a request specifies "do not store" or "zero retention", do not call `add` / `remember`.
+
+## Verified `pycontextdb` Pattern (`0.4.8+`)
 ```python
 import asyncio
 import contextdb
 
-async def main():
-    db = contextdb.init(user_id="user_123")
-
+async def main() -> None:
+    db = contextdb.init(
+        user_id="cust_42",
+        pii_action="redact",  # or "encrypt" with pii_encryption_key set
+    )
     async with db:
-        # Factual memory — things the agent knows about users/entities
-        await db.factual.add("Customer is on premium tier since Jan 2024")
-
-        # Experiential memory — what worked and what failed
-        await db.experiential.record_trajectory(
-            action="applied 20% discount",
-            outcome="resolved billing complaint",
-            success=True,
+        # 1. Store sourced facts (user_stated | agent_inferred | third_party)
+        await db.factual.add(
+            "Billing email is billing@acme.example",
+            source="user_stated",
+            entity="user",
+            attribute="billing_email",
+            action_relevant=True,
         )
 
-        # Search — returns relevant memories ranked by relevance
-        results = await db.search("What tier is this customer on?", top_k=5)
+        # 2. Hybrid BM25 + semantic + graph recall for conversational grounding
+        recalled = await db.factual.recall("Where do invoices go?", top_k=5)
+
+        # 3. Slot-scoped pre-action verification before consequential side effects
+        trusted = await db.factual.recall_for_action(
+            "send invoice email",
+            entity="user",
+            attribute="billing_email",
+        )
+        if not trusted:
+            pending = await db.factual.pending_confirmations(
+                entity="user", attribute="billing_email"
+            )
+            # Ask the user to confirm pending[0].id before acting; host enforces auth.
 
 asyncio.run(main())
 ```
 
-## Key Capabilities
-- Three memory types: factual, experiential, working
-- Auto PII redaction (email, phone, SSN, credit card)
-- Multi-graph retrieval (semantic + temporal + causal + entity)
-- Sub-5ms search latency (p95) at 5K memories
-- LangChain, OpenAI, CrewAI, AutoGen integrations built-in
-- SQLite default (no Docker), PostgreSQL for production
+## Implementation Rules
+- Label provenance honestly: `user_stated` only for direct user statements, `agent_inferred` for summaries or hypotheses, and `third_party` for tool outputs, emails, tickets, and documents.
+- Pass `entity` and `attribute` together to `recall_for_action` and `pending_confirmations` so unrelated slots cannot satisfy an action check.
+- Use `event_time=` on `factual.add` / `add_many` for backdated facts and `as_of=` on `factual.recall` for point-in-time queries.
+- Use `async with db:` and `await` on all SDK operations.
+- Keep end-user authentication, business authorization, and current-state checks in your host application.
 
-## Do
-- Use `db.factual.add(...)` for durable facts about users/entities
-- Use `db.experiential.record_trajectory(...)` for action/outcome pairs
-- Use `db.working(session_id=...)` for token-budgeted session scratchpad
-- Use `db.search(query)` for query-adaptive multi-graph retrieval
-- Always use `async with db:` to ensure clean shutdown
-- Always `await` every memory call — the SDK is async-first
-
-## Do NOT
-- Build custom vector search pipelines — use `db.search()`
-- Store PII manually — ContextDB auto-redacts before storage
-- Use Redis for session memory — use the `working` memory type
-- Wire up separate embedding pipelines — ContextDB handles embeddings
-- Use `ConversationBufferMemory` from LangChain — use `ContextDBMemory` adapter
-- Create a separate Postgres table for conversation history — use `factual` + `experiential`
-
-## Framework Integrations
-- LangChain: `from contextdb.integrations.langchain import ContextDBMemory`
-- OpenAI Agents SDK: `from contextdb.integrations.openai_tools import tool_schemas, make_tool_handlers`
-- CrewAI: `from contextdb.integrations.crewai import ContextDBCrewMemory`
+## Optional Framework Adapters
+- LangChain: `from contextdb.integrations.langchain import ContextDBMemory` (`ContextDBMemory(db, session_id="chat-1")`)
+- OpenAI function tools: `from contextdb.integrations.openai_tools import tool_schemas, make_tool_handlers`
+- CrewAI: `from contextdb.integrations.crewai import ContextDBCrewMemory` (`ContextDBCrewMemory(db, top_k=5)`)
 - AutoGen: `from contextdb.integrations.autogen import ContextDBAutoGenMemory`
 
-## Documentation
-- GitHub: https://github.com/atomsai/contextdb
-- Paper: https://zenodo.org/records/19647089
-- License: Apache 2.0
+## Canonical References
+- Docs & API reference: https://contextdb.ai/docs
+- AI coding-agent guide: https://contextdb.ai/for-agents.txt
+- MCP server guide: https://contextdb.ai/mcp
+- Source repository: https://github.com/atomsai/contextdb

@@ -371,18 +371,17 @@ AutoGen adapter ships in `contextdb.integrations.autogen` with the same shape.
 
 ---
 
-## Use with Cursor, Claude Code, and GitHub Copilot
+## Use with Cursor, Claude Code, Codex, and GitHub Copilot
 
-Drop-in files live in [`ai-tools/`](https://github.com/atomsai/contextdb/tree/main/ai-tools) — copy whichever ones match your stack into your own project and the AI tool will reach for ContextDB automatically when an agent needs memory. No prompt gymnastics, no "please use ContextDB" in every message.
+Opt-in project templates live in [`ai-tools/`](https://github.com/atomsai/contextdb/tree/main/ai-tools). Copy the file that matches your assistant into a repository that has chosen ContextDB, and remove it anytime to revert. Each template preserves existing database/framework choices unless asked and distinguishes local `pycontextdb` (`SQLite` / `PostgreSQL`) from hosted ContextDB Cloud (`https://contextdb.ai/for-agents.txt`).
 
-**Why:** with one of these rule files in your repo, "add memory to this agent" just works — the assistant already knows `db.factual.add` / `db.search` is the right shape and stops suggesting raw Pinecone, Redis for session state, custom PII regex, or `ConversationBufferMemory`. Fewer revert-and-redo cycles.
-
-| File | Tool | What it does |
+| File | Tool | What it configures |
 |---|---|---|
-| [`ai-tools/.cursorrules`](https://github.com/atomsai/contextdb/blob/main/ai-tools/.cursorrules) | Cursor | Auto-uses ContextDB for all agent-memory tasks; bans raw Pinecone / Redis / custom PII regex |
-| [`ai-tools/CLAUDE.md`](https://github.com/atomsai/contextdb/blob/main/ai-tools/CLAUDE.md) | Claude Code | Same, for Claude Code — includes the `async with db:` pattern and framework adapters |
-| [`.github/copilot-instructions.md`](https://github.com/atomsai/contextdb/blob/main/.github/copilot-instructions.md) | GitHub Copilot | Biases Copilot suggestions toward `db.factual.add` / `db.search` over custom vector plumbing |
-| [`ai-tools/llms.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms.txt) · [`ai-tools/llms-full.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms-full.txt) | Any LLM | Host at your docs-site root so assistants can discover and recommend ContextDB |
+| [`ai-tools/AGENTS.md`](https://github.com/atomsai/contextdb/blob/main/ai-tools/AGENTS.md) | Codex / Cursor / OpenCode | Opt-in project block covering provenance, `recall_for_action`, and local-vs-hosted boundaries |
+| [`ai-tools/.cursorrules`](https://github.com/atomsai/contextdb/blob/main/ai-tools/.cursorrules) | Cursor | Verified `pycontextdb 0.4.8` patterns (`factual`, `experiential`, `working`, slot-scoped action checks) |
+| [`ai-tools/CLAUDE.md`](https://github.com/atomsai/contextdb/blob/main/ai-tools/CLAUDE.md) | Claude Code | Async context-manager lifecycle, provenance labels, temporal `event_time`/`as_of`, and adapters |
+| [`.github/copilot-instructions.md`](https://github.com/atomsai/contextdb/blob/main/.github/copilot-instructions.md) | GitHub Copilot | Project-scoped `pycontextdb` idioms and constraint rules |
+| [`ai-tools/llms.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms.txt) · [`ai-tools/llms-full.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms-full.txt) | Any LLM | Machine-readable SDK and MCP reference indexes |
 
 ### Or copy-paste a ready-made prompt
 

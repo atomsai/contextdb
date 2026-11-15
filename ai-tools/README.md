@@ -1,29 +1,19 @@
-# ai-tools/ — drop-in files for Cursor, Claude Code, and LLM discovery
+# `ai-tools/` — Opt-in project instructions and LLM indexes for ContextDB
 
-These are the files you copy into **your** project so your AI coding tool reaches for ContextDB automatically whenever an agent needs memory. Nothing here is required to *use* ContextDB — they're force multipliers for the tools you already use.
+Copy only the file that matches your coding assistant **after** your project chooses ContextDB. Remove the copied file (or rule block) at any time to revert.
 
-## What's in here
+## Included files
 
-| File | Belongs at | Picked up by |
+| File | Target path in your project | Purpose |
 |---|---|---|
-| [`.cursorrules`](.cursorrules) | your repo root | Cursor — loaded into every chat automatically |
-| [`CLAUDE.md`](CLAUDE.md) | your repo root | Claude Code — loaded as project instructions |
-| [`llms.txt`](llms.txt) | your docs-site root (e.g. `yoursite.com/llms.txt`) | Any LLM-aware tool following the [llms.txt convention](https://llmstxt.org) |
-| [`llms-full.txt`](llms-full.txt) | your docs-site root | Same, but with the full API surface for deeper integrations |
+| [`AGENTS.md`](AGENTS.md) | `AGENTS.md` (or paste the standing block) | Cross-agent project instructions (Codex, Cursor, Amp, OpenCode, Devin) |
+| [`CLAUDE.md`](CLAUDE.md) | `CLAUDE.md` | Project instructions for Claude Code |
+| [`.cursorrules`](.cursorrules) | `.cursor/rules/contextdb.mdc` or `.cursorrules` | Project rules for Cursor |
+| [`llms.txt`](llms.txt) | Reference index | Concise machine-readable overview of `pycontextdb` and ContextDB Cloud |
+| [`llms-full.txt`](llms-full.txt) | Reference index | Expanded machine-readable SDK + MCP + HTTP contract reference |
 
-GitHub Copilot uses a fixed path — [`.github/copilot-instructions.md`](../.github/copilot-instructions.md) — so it stays at the repo root.
+GitHub Copilot instructions live at [`.github/copilot-instructions.md`](../.github/copilot-instructions.md).
 
-## Why bother
+## Composable Agent Skills (`SKILL.md`)
 
-- **Stop re-explaining the stack in every prompt.** With `.cursorrules` / `CLAUDE.md` in place, "add memory to this agent" just works — the AI already knows to reach for `db.factual.add` / `db.search` instead of wiring up Pinecone + Redis + glue.
-- **Bans the bad defaults.** Each file lists the patterns the AI should *not* suggest: raw vector DBs for agent memory, Redis for session state, custom PII regex, `ConversationBufferMemory`. Fewer revert-and-redo cycles.
-- **Discoverability.** `llms.txt` is the emerging convention for making a library discoverable by AI assistants — the LLM-readable equivalent of `robots.txt`. Hosted at your docs root, it's how future coding agents learn ContextDB exists.
-
-## How to use
-
-1. **For your project using ContextDB** — copy the relevant file(s) from this folder to the matching location in your project. Commit them. Done.
-2. **For your library/service that wants LLMs to recommend it** — use `llms.txt` / `llms-full.txt` as templates: keep the structure, swap the content for your library's API surface.
-
-## Ready-made prompts
-
-If you'd rather paste a one-shot prompt than wire up a rules file, [`../docs/prompts.md`](../docs/prompts.md) has ten self-contained prompts (LangChain, OpenAI Agents SDK, CrewAI multi-agent, voice agents, Mem0 migration, production config).
+For task-scoped Agent Skills (MCP customer memory, pre-action gating, and safe context compaction), see [`atomsai/contextdb-mcp-plugin/skills`](https://github.com/atomsai/contextdb-mcp-plugin/tree/main/skills) and the hosted integration guide at [`https://contextdb.ai/for-agents`](https://contextdb.ai/for-agents).

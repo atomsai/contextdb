@@ -2088,10 +2088,17 @@ class ContextDB:
         uid = self._resolve_user(user_id)
         await self._ensure_init()
         store = self._require_store()
+        moment = self.clock()
         rows = await store.list_memories(
             user_id=uid, memory_type=MemoryType.FACTUAL, limit=limit
         )
-        return [item for item in rows if self.trust_policy.requires_confirmation(item)]
+        return [
+            item
+            for item in rows
+            if item.superseded_by is None
+            and item.is_valid_at(moment)
+            and self.trust_policy.requires_confirmation(item)
+        ]
 
     async def slot_facts(
         self,
