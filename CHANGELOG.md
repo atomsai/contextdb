@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.4.9 — 2026-11-15
+
+- `ContextDB.pending_confirmations()` (unslotted) now excludes superseded
+  (`superseded_by is not None`) and expired (`not is_valid_at(moment)`)
+  revisions, matching slotted `pending_confirmations(entity=..., attribute=...)`
+  so callers no longer receive historical revisions that have already been
+  replaced.
+- `contextdb.mcp` local MCP server adds `event_time` to `remember`, `as_of` to
+  `recall`, optional `entity` and `attribute` slot scoping to
+  `recall_for_action` and `pending_confirmations`, and explicit parameter
+  descriptions across all six MCP tools.
+- `PostgresStore.search_text()` serves warm lexical identifier lookups from the
+  in-process index cache when synchronized with the store revision.
+- `pyproject.toml` updates `Documentation` to `https://contextdb.ai/docs`, adds
+  `For AI Agents`, `MCP Connector`, and `Changelog` project URLs, and expands
+  PyPI discovery keywords (`mcp`, `model-context-protocol`, `provenance`,
+  `pii-redaction`, `sqlite`, `postgresql`, `pgvector`, `bm25`,
+  `temporal-memory`).
+- `ai-tools/` (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `llms.txt`,
+  `llms-full.txt`, `.github/copilot-instructions.md`) ships verified `0.4.9`
+  API signatures and opt-in, owner-controlled project rules.
+
 ## 0.4.8 — 2026-10-21
 
 - `factual.add()`, `add_fast()`, and `add_many()` accept optional `event_time`

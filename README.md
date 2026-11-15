@@ -378,7 +378,7 @@ Opt-in project templates live in [`ai-tools/`](https://github.com/atomsai/contex
 | File | Tool | What it configures |
 |---|---|---|
 | [`ai-tools/AGENTS.md`](https://github.com/atomsai/contextdb/blob/main/ai-tools/AGENTS.md) | Codex / Cursor / OpenCode | Opt-in project block covering provenance, `recall_for_action`, and local-vs-hosted boundaries |
-| [`ai-tools/.cursorrules`](https://github.com/atomsai/contextdb/blob/main/ai-tools/.cursorrules) | Cursor | Verified `pycontextdb 0.4.8` patterns (`factual`, `experiential`, `working`, slot-scoped action checks) |
+| [`ai-tools/.cursorrules`](https://github.com/atomsai/contextdb/blob/main/ai-tools/.cursorrules) | Cursor | Verified `pycontextdb 0.4.9` patterns (`factual`, `experiential`, `working`, slot-scoped action checks) |
 | [`ai-tools/CLAUDE.md`](https://github.com/atomsai/contextdb/blob/main/ai-tools/CLAUDE.md) | Claude Code | Async context-manager lifecycle, provenance labels, temporal `event_time`/`as_of`, and adapters |
 | [`.github/copilot-instructions.md`](https://github.com/atomsai/contextdb/blob/main/.github/copilot-instructions.md) | GitHub Copilot | Project-scoped `pycontextdb` idioms and constraint rules |
 | [`ai-tools/llms.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms.txt) · [`ai-tools/llms-full.txt`](https://github.com/atomsai/contextdb/blob/main/ai-tools/llms-full.txt) | Any LLM | Machine-readable SDK and MCP reference indexes |

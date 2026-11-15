@@ -1,4 +1,4 @@
-# pycontextdb & ContextDB — Complete Machine Reference (`0.4.8`)
+# pycontextdb & ContextDB — Complete Machine Reference (`0.4.9`)
 
 > Decision-safe memory for AI agents. Open-source Apache-2.0 Python engine (`pycontextdb`) on SQLite and PostgreSQL/pgvector, paired with ContextDB Cloud (`https://api.contextdb.ai`) and an OAuth 2.1 Streamable HTTP MCP server (`https://api.contextdb.ai/mcp`).
 
@@ -13,7 +13,7 @@
 | Deterministic CI regression gate for agent memory | `contextdb-memory-ci` | `pip install contextdb-memory-ci==0.1.0a1` or `atomsai/contextdb-clients@memory-ci-action-v0.1.0` |
 | User specifies "do not store" / "zero retention" | None | Do not call `add` / `remember`; keep state ephemeral in-memory only |
 
-## 2. Core `pycontextdb` API (`0.4.8`)
+## 2. Core `pycontextdb` API (`0.4.9`)
 
 ### Initialization & PII Protection
 ```python

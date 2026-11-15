@@ -7,7 +7,7 @@ Opt-in project instructions for repositories that have chosen **ContextDB** (`pi
 - **Hosted Cloud API or OAuth MCP:** see `https://contextdb.ai/for-agents.txt` and `https://contextdb.ai/openapi.yaml`. Keep `CONTEXTDB_API_KEY` in server-side secrets only.
 - **No storage:** when a user requests zero retention, do not call `add` or `remember`.
 
-## Core `pycontextdb` pattern (`0.4.8+`)
+## Core `pycontextdb` pattern (`0.4.9+`)
 
 ```python
 import asyncio

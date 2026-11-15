@@ -9,7 +9,7 @@
 - Hosted OAuth 2.1 MCP guide: https://contextdb.ai/mcp
 - Open-core boundary: https://contextdb.ai/open-core
 - Source repository: https://github.com/atomsai/contextdb
-- PyPI package (`pycontextdb==0.4.8`): https://pypi.org/project/pycontextdb/
+- PyPI package (`pycontextdb==0.4.9`): https://pypi.org/project/pycontextdb/
 - MCP plugin & Agent Skills: https://github.com/atomsai/contextdb-mcp-plugin
 - Cloud clients (`contextdb-cloud-client`, `@contextdb/cloud`) & Memory CI: https://github.com/atomsai/contextdb-clients
 
@@ -29,7 +29,7 @@ pip install "pycontextdb[local]"        # local SentenceTransformers embeddings
 pip install "pycontextdb[serve]"        # local HTTP + /mcp server (`contextdb serve`)
 ```
 
-## Minimal Verified Example (`pycontextdb 0.4.8`)
+## Minimal Verified Example (`pycontextdb 0.4.9`)
 
 ```python
 import asyncio

@@ -4,7 +4,7 @@ Copy into your repository (`.cursor/rules/contextdb.mdc` or `.cursorrules`) afte
 
 Preserve existing framework, database, and cache choices unless a change is requested. If a task requires "no storage" or "zero retention", explain the constraint and do not persist memories. If a task requires "local only" or "no cloud", use the local Apache-2.0 `pycontextdb` engine on SQLite rather than hosted ContextDB Cloud.
 
-## Local & Self-Hosted Pattern (`pycontextdb>=0.4.8`)
+## Local & Self-Hosted Pattern (`pycontextdb>=0.4.9`)
 
 ```python
 import asyncio

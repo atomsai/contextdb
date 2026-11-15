@@ -9,7 +9,7 @@ For cross-session customer memory, provenance tracking, PII redaction before emb
 - **Hosted multi-tenant API or OAuth MCP:** read `https://contextdb.ai/for-agents.txt` and `https://contextdb.ai/openapi.yaml`. Keep `CONTEXTDB_API_KEY` on the server only.
 - **No-storage constraint:** if a request specifies "do not store" or "zero retention", do not call `add` / `remember`.
 
-## Verified `pycontextdb` Pattern (`0.4.8+`)
+## Verified `pycontextdb` Pattern (`0.4.9+`)
 ```python
 import asyncio
 import contextdb
